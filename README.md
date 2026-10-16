@@ -24,9 +24,9 @@ Student Deadline Radar is a fullstack web application designed for students to t
 ## 🛠️ Tech Stack
 
 - **Frontend**: React 19, Vite, Tailwind CSS v4, Lucide React, Canvas Confetti.
-- **Backend**: Node.js, Express, SQLite3 (`better-sqlite3` compatible), ImapFlow, Mailparser, Axios.
-- **Python Bridge (Optional)**: FastAPI, SQLAlchemy, Pydantic, Dateparser.
-- **Deployment**: Render, Vercel, Railway, Fly.io, Docker.
+- **Backend**: Node.js, Express, SQLite3, ImapFlow, Mailparser, Axios.
+- **AI Engine**: Google Gemini 1.5 Flash + Heuristic Regex Engine.
+- **Deployment**: Vercel (Fullstack serverless), Local Node.js.
 
 ---
 

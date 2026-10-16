@@ -1,9 +1,9 @@
 # 2. Technical Architecture Document
 
 **Project Name:** Student Deadline Radar  
-**Architecture Style:** Modular Monolith / Dual-Mode Hybrid Full-Stack  
-**Runtime:** Node.js 20+ (Express) & Optional Python 3.10+ (FastAPI)  
-**Document Version:** 1.0.0  
+**Architecture Style:** Fullstack JavaScript (Vite React + Express Serverless)  
+**Runtime:** Node.js 20+ (Express)  
+**Document Version:** 1.1.0  
 
 ---
 
@@ -18,8 +18,8 @@ graph TD
         CalendarGen[ICS Calendar & Google Cal Sync]
     end
 
-    subgraph Server ["Backend Application Server (Node.js Express)"]
-        API[Express REST API - Port 8000]
+    subgraph Server ["Backend Application Server (Node.js Express / Vercel Serverless)"]
+        API[Express REST API - Port 8000 /api]
         StaticServer[Static Asset File Server - /dist]
         CronScanner[Mailbox Sync Scheduler]
         AIEngine[Dual-Core Extraction Engine]
@@ -28,7 +28,6 @@ graph TD
     subgraph Extraction ["Extraction Engines"]
         RuleExtractor[Heuristic Rule-Based Extractor]
         GeminiAPI[Google Gemini 1.5 Flash API]
-        PythonBridge[Python Model Subprocess Bridge]
     end
 
     subgraph Storage ["Persistence Layer"]
@@ -52,7 +51,6 @@ graph TD
 
     AIEngine --> RuleExtractor
     AIEngine --> GeminiAPI
-    AIEngine -.->|Optional| PythonBridge
 ```
 
 ---

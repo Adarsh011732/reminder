@@ -1,18 +1,32 @@
+/**
+ * ============================================================================
+ * SQLite Database Connection & Schema Layer
+ * ============================================================================
+ * Handles persistent task storage, table initialization, and parameterized query helpers.
+ *
+ * Environment Handling:
+ * - Vercel Serverless: Uses /tmp/deadlines.db because the Vercel filesystem is read-only.
+ * - Local / Self-Hosted: Uses ./backend/deadlines.db.
+ * ============================================================================
+ */
+
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const { getInitialTasks } = require('./services/mockData');
 
+// Determine database path based on deployment platform
 const DB_PATH = process.env.DATABASE_PATH || (
   process.env.VERCEL ? path.join('/tmp', 'deadlines.db') : path.join(__dirname, 'deadlines.db')
 );
 
-// Ensure database directory exists (useful when mounting volumes in Docker/Render/Railway)
+// Ensure storage directory exists
 const dbDir = path.dirname(DB_PATH);
 if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
+// Open SQLite database connection
 const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) {
     console.error('Error opening SQLite database:', err.message);
@@ -21,7 +35,12 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
   }
 });
 
-// Helper for promise-based queries
+/**
+ * Execute a parameterized write query (INSERT, UPDATE, DELETE).
+ * @param {string} sql - SQL query string with ? placeholders
+ * @param {Array} params - Bound parameter values
+ * @returns {Promise<{lastID: number, changes: number}>}
+ */
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function (err) {
@@ -31,6 +50,12 @@ function run(sql, params = []) {
   });
 }
 
+/**
+ * Execute a parameterized query returning a single row.
+ * @param {string} sql - SQL query string with ? placeholders
+ * @param {Array} params - Bound parameter values
+ * @returns {Promise<Object|null>}
+ */
 function get(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => {
@@ -40,6 +65,12 @@ function get(sql, params = []) {
   });
 }
 
+/**
+ * Execute a parameterized query returning all matching rows.
+ * @param {string} sql - SQL query string with ? placeholders
+ * @param {Array} params - Bound parameter values
+ * @returns {Promise<Array<Object>>}
+ */
 function all(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
@@ -49,8 +80,11 @@ function all(sql, params = []) {
   });
 }
 
-// Initialize tables and seed if empty
+/**
+ * Initialize database tables and seed sample student directives if table is empty.
+ */
 async function initDb() {
+  // Table 1: Deadline Tasks (actionable items extracted from academic notices)
   await run(`
     CREATE TABLE IF NOT EXISTS deadline_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +109,7 @@ async function initDb() {
     )
   `);
 
+  // Table 2: Email Logs (audit trail of processed email headers)
   await run(`
     CREATE TABLE IF NOT EXISTS email_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +123,7 @@ async function initDb() {
     )
   `);
 
+  // Table 3: User Settings (preferences for Telegram, calendar sync, and digests)
   await run(`
     CREATE TABLE IF NOT EXISTS user_settings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,7 +135,7 @@ async function initDb() {
     )
   `);
 
-  // Check if initial tasks exist
+  // Seed initial tasks if table is empty (ensures rich UI on first launch)
   const countRow = await get('SELECT COUNT(*) as count FROM deadline_tasks');
   if (!countRow || countRow.count === 0) {
     console.log('Seeding initial tasks into database...');
@@ -121,6 +157,9 @@ async function initDb() {
   }
 }
 
+/**
+ * Safely closes the database connection on server shutdown.
+ */
 function closeDb() {
   return new Promise((resolve, reject) => {
     db.close((err) => {

@@ -1,3 +1,16 @@
+/**
+ * ============================================================================
+ * Student Deadline Radar - Main Application Dashboard
+ * ============================================================================
+ * Features:
+ * - Real-time task lists separated into Active, Approaching, Critical, and Archive
+ * - Tri-color urgency classification (🔴 Red: <48h, 🟡 Yellow: <7d, 🟢 Green: >7d)
+ * - Mailbox synchronization modal with IMAP background ingestion
+ * - Single-email AI parsing dialog with Gemini 1.5 Flash extraction
+ * - Telegram alert test dispatch and native browser push notifications
+ * ============================================================================
+ */
+
 import React, { useState, useEffect } from 'react';
 import Navbar from './components/Navbar';
 import StatsBanner from './components/StatsBanner';

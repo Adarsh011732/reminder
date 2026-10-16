@@ -1,3 +1,16 @@
+/**
+ * ============================================================================
+ * Student Deadline Radar - Backend API Server
+ * ============================================================================
+ * Architecture:
+ * - Runtime: Node.js (v18+) with Express
+ * - Database: SQLite3 (local ./backend/deadlines.db or serverless /tmp/deadlines.db)
+ * - Mailbox Ingestion: ImapFlow (secure TLS port 993) + MailParser
+ * - Extraction Engine: Dual-Tier (Tier 1: Google Gemini 1.5 Flash, Tier 2: Heuristic Regex)
+ * - Compatibility: Local Standalone Server & Vercel Serverless Function (api/index.js)
+ * ============================================================================
+ */
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -8,7 +21,6 @@ require('dotenv').config();
 
 const { db, run, get, all, initDb, closeDb } = require('./db');
 const { computeUrgencyTier, extractDeadlineFromEmail } = require('./services/aiExtractor');
-const { executePythonExtractor } = require('./services/pythonBridge');
 const { testImapConnection, fetchAndProcessRealEmails } = require('./services/imapService');
 const { SAMPLE_STUDENT_EMAILS } = require('./services/mockData');
 
@@ -17,31 +29,46 @@ const PORT = process.env.PORT || 8000;
 const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist');
 const HAS_FRONTEND = fs.existsSync(FRONTEND_DIST);
 
-// 1. Disable information disclosure headers
+// ----------------------------------------------------------------------------
+// 1. SECURITY HEADERS & INFORMATION DISCLOSURE DEFENSE
+// ----------------------------------------------------------------------------
+// Disable Express fingerprint header to prevent automated server reconnaissance
 app.disable('x-powered-by');
 
-// 2. HTTP Security Headers (Defends against clickjacking, MIME sniffing, XSS, and forces HTTPS)
+// Inject HTTP security headers (OWASP recommended defense against XSS, clickjacking, MIME-sniffing)
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  
+  // Force HTTPS / HSTS in production environments
   if (process.env.NODE_ENV === 'production') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   }
   next();
 });
 
-// 3. In-Memory Sliding-Window Rate Limiter (Defends against brute-force and DoS)
+// ----------------------------------------------------------------------------
+// 2. SLIDING-WINDOW RATE LIMITING (Brute-Force & DoS Mitigation)
+// ----------------------------------------------------------------------------
 const rateLimitMap = new Map();
+
+/**
+ * Creates an in-memory sliding-window rate limiter middleware.
+ * @param {Object} options
+ * @param {number} options.windowMs - Time window in milliseconds
+ * @param {number} options.max - Maximum requests allowed per window
+ * @param {string} options.message - Error message when limit is exceeded
+ */
 function createRateLimiter({ windowMs = 60 * 1000, max = 100, message = 'Too many requests. Please slow down.' }) {
   return (req, res, next) => {
     const rawIp = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
     const now = Date.now();
     const key = `${rawIp}:${req.baseUrl || req.path}`;
 
-    // Periodic garbage collection
+    // Periodic garbage collection to prevent memory leaks from inactive IPs
     if (rateLimitMap.size > 5000) {
       for (const [k, v] of rateLimitMap.entries()) {
         if (now > v.resetTime) rateLimitMap.delete(k);
@@ -74,10 +101,13 @@ function createRateLimiter({ windowMs = 60 * 1000, max = 100, message = 'Too man
   };
 }
 
+// Global & tiered rate limiters
 const generalLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 120 });
 const sensitiveLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20, message: 'Too many authentication/sync attempts. Please wait 60 seconds.' });
 
-// 4. Strict CORS configuration
+// ----------------------------------------------------------------------------
+// 3. CORS & REQUEST PARSING CONFIGURATION
+// ----------------------------------------------------------------------------
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
   : '*';
@@ -88,17 +118,21 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// 5. Restrict request body buffer limit to prevent memory-exhaustion DoS
+// Restrict request body buffer to 500kb to mitigate memory-exhaustion DoS attacks
 app.use(express.json({ limit: '500kb' }));
 
-// Apply rate limiters
+// Apply rate limiting tiers to endpoints
 app.use('/api/', generalLimiter);
 app.use('/api/mailbox/', sensitiveLimiter);
 app.use('/api/telegram/', sensitiveLimiter);
 app.use('/api/deadlines/parse-raw', sensitiveLimiter);
-app.use('/api/python/', sensitiveLimiter);
 
-// Cloud Health Check Endpoints (for Render, Fly.io, Kubernetes, Docker, Railway)
+// ----------------------------------------------------------------------------
+// 4. HEALTH CHECK & STATUS ROUTES
+// ----------------------------------------------------------------------------
+/**
+ * Health check endpoint for uptime monitoring and cloud diagnostics
+ */
 app.get(['/health', '/api/health'], (req, res) => {
   res.status(200).json({
     status: 'ok',
@@ -108,30 +142,41 @@ app.get(['/health', '/api/health'], (req, res) => {
   });
 });
 
-// Serve frontend static files in production when dist exists
+// Serve frontend static build assets if available
 if (HAS_FRONTEND) {
   app.use(express.static(FRONTEND_DIST));
 }
 
-// Root route: Serve frontend index.html if built, otherwise API status JSON
+/**
+ * Root route: Serves single-page application index.html if built, or API status JSON
+ */
 app.get('/', (req, res) => {
   if (HAS_FRONTEND) {
     return res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
   }
   res.json({
     status: 'online',
-    service: 'Student Deadline Tracker API (Node.js & Python Hybrid)',
+    service: 'Student Deadline Radar API (Node.js)',
     version: '1.0.0',
-    python_models_supported: true,
-    engine: 'Node.js Express + Python Bridge + SQLite'
+    engine: 'Node.js Express + SQLite + Gemini 1.5 Flash'
   });
 });
 
-// GET /api/deadlines - With input validation & parameterization
+// ----------------------------------------------------------------------------
+// 5. DEADLINE MANAGEMENT ENDPOINTS
+// ----------------------------------------------------------------------------
 const VALID_STATUSES = ['all', 'active', 'done', 'snoozed'];
 const VALID_CATEGORIES = ['all', 'registration', 'hackathon', 'placement', 'feedback', 'exam', 'assignment', 'event', 'form', 'other'];
 const VALID_URGENCIES = ['all', 'red', 'yellow', 'green', 'overdue'];
 
+/**
+ * GET /api/deadlines
+ * Query Parameters:
+ * - status: 'active' | 'done' | 'snoozed' | 'all'
+ * - category: 'registration' | 'hackathon' | 'placement' | ... | 'all'
+ * - urgency: 'red' | 'yellow' | 'green' | 'overdue' | 'all'
+ * - search: Keyword string to filter title, action, or sender
+ */
 app.get('/api/deadlines', async (req, res) => {
   try {
     const rawStatus = (req.query.status || 'active').toLowerCase().trim();
@@ -166,7 +211,7 @@ app.get('/api/deadlines', async (req, res) => {
 
     const tasks = await all(sql, params);
 
-    // Dynamically update urgency tiers
+    // Dynamically update real-time urgency tiers based on current timestamp
     for (const task of tasks) {
       if (task.deadline_iso && task.status === 'active') {
         const newUrgency = computeUrgencyTier(task.deadline_iso);
@@ -180,7 +225,7 @@ app.get('/api/deadlines', async (req, res) => {
       }
     }
 
-    // Filter by urgency if specified
+    // Filter by urgency if requested
     let filteredTasks = tasks;
     if (urgency && urgency !== 'all') {
       filteredTasks = tasks.filter(t => t.urgency_tier === urgency);
@@ -193,31 +238,25 @@ app.get('/api/deadlines', async (req, res) => {
   }
 });
 
-// POST /api/deadlines/parse-raw
+/**
+ * POST /api/deadlines/parse-raw
+ * Parses a single raw email notice string using the Gemini AI + Heuristic Regex pipeline.
+ * Optional query parameter: auto_save=true to persist directly into database.
+ */
 app.post('/api/deadlines/parse-raw', async (req, res) => {
   try {
-    const { subject = '', sender = '', body = '', sent_at = null } = req.body;
+    const { subject = '', sender = '', body = '', sent_at = null } = req.body || {};
     const autoSave = req.query.auto_save === 'true' || req.body.auto_save === true;
-    const usePython = req.query.use_python === 'true' || req.body.use_python === true;
 
-    let extracted;
-    if (usePython) {
-      // Execute via Python Model Bridge
-      try {
-        extracted = await executePythonExtractor({ subject, sender, body, sent_at });
-      } catch (pyErr) {
-        console.warn('Python model bridge error, falling back to Node AI extractor:', pyErr.message);
-        extracted = await extractDeadlineFromEmail(subject, sender, body, sent_at);
-      }
-    } else {
-      extracted = await extractDeadlineFromEmail(subject, sender, body, sent_at);
-    }
+    // Execute through dual-tier extraction engine (Gemini Flash with automatic Heuristic fallback)
+    const extracted = await extractDeadlineFromEmail(subject, sender, body, sent_at);
 
     let savedTask = null;
     if (autoSave && extracted && extracted.is_actionable) {
       const deadlineVal = extracted.deadline_iso || null;
       const urgency = computeUrgencyTier(deadlineVal);
 
+      // Generate unique thread ID hash for deduplication
       const deterministicThreadId = crypto
         .createHash('sha256')
         .update(`${subject}:${sender}:${sent_at || Date.now()}`)
@@ -261,7 +300,11 @@ app.post('/api/deadlines/parse-raw', async (req, res) => {
   }
 });
 
-// PATCH /api/deadlines/:id/action - Strict validation & parameterization
+/**
+ * PATCH /api/deadlines/:id/action
+ * Updates deadline task status.
+ * Supported actions: 'done' | 'snooze_24h' | 'reactivate' | 'delete'
+ */
 const ALLOWED_TASK_ACTIONS = ['done', 'snooze_24h', 'reactivate', 'delete'];
 
 app.patch('/api/deadlines/:id/action', async (req, res) => {
@@ -308,7 +351,10 @@ app.patch('/api/deadlines/:id/action', async (req, res) => {
   }
 });
 
-// GET /api/stats
+/**
+ * GET /api/stats
+ * Aggregates statistics for the top summary banner (urgent counts, categories, streak)
+ */
 app.get('/api/stats', async (req, res) => {
   try {
     const tasks = await all('SELECT * FROM deadline_tasks');
@@ -340,12 +386,21 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// GET /api/sample-emails
+/**
+ * GET /api/sample-emails
+ * Provides realistic university email notice fixtures for testing and demo mode
+ */
 app.get('/api/sample-emails', (req, res) => {
   res.json(SAMPLE_STUDENT_EMAILS);
 });
 
-// POST /api/telegram/test-alert - Validated & rate-limited
+// ----------------------------------------------------------------------------
+// 6. TELEGRAM ALERT DISPATCH ENDPOINT
+// ----------------------------------------------------------------------------
+/**
+ * POST /api/telegram/test-alert
+ * Dispatches an urgent Markdown formatted notification to Telegram
+ */
 app.post('/api/telegram/test-alert', async (req, res) => {
   try {
     const { task_id, bot_token, chat_id } = req.body || {};
@@ -420,34 +475,35 @@ _Tri-Color Urgency: ${(task.urgency_tier || 'green').toUpperCase()}_`;
   }
 });
 
-// Helper regex for validating email and IMAP server strings
+// ----------------------------------------------------------------------------
+// 7. IMAP STUDENT MAILBOX INGESTION ENDPOINTS
+// ----------------------------------------------------------------------------
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HOSTNAME_REGEX = /^[a-zA-Z0-9.-]+$/;
 
-// POST /api/mailbox/test-connection - Validated and rate-limited
+/**
+ * POST /api/mailbox/test-connection
+ * Lightweight TLS handshake test against student IMAP server (~300ms verification)
+ */
 app.post('/api/mailbox/test-connection', async (req, res) => {
   try {
     const { email = '', app_password = '', imap_server = 'imap.gmail.com', port = 993 } = req.body || {};
 
-    // Validate email
     const trimmedEmail = String(email).trim().toLowerCase();
     if (!trimmedEmail || !EMAIL_REGEX.test(trimmedEmail) || trimmedEmail.length > 254) {
       return res.status(400).json({ detail: { success: false, message: 'Invalid email address format.' } });
     }
 
-    // Validate password presence
     const trimmedPass = String(app_password).trim();
     if (!trimmedPass || trimmedPass.length > 128) {
       return res.status(400).json({ detail: { success: false, message: 'App password is required.' } });
     }
 
-    // Validate server hostname
     const trimmedServer = String(imap_server).trim().toLowerCase();
     if (!HOSTNAME_REGEX.test(trimmedServer) || trimmedServer.length > 100) {
       return res.status(400).json({ detail: { success: false, message: 'Invalid IMAP server hostname.' } });
     }
 
-    // Validate port
     const numPort = parseInt(port, 10);
     if (!Number.isInteger(numPort) || numPort < 1 || numPort > 65535) {
       return res.status(400).json({ detail: { success: false, message: 'Invalid port. Must be between 1 and 65535.' } });
@@ -469,7 +525,10 @@ app.post('/api/mailbox/test-connection', async (req, res) => {
   }
 });
 
-// POST /api/mailbox/fetch-real-emails - Validated and rate-limited
+/**
+ * POST /api/mailbox/fetch-real-emails
+ * Connects over IMAP TLS, fetches recent messages, extracts deadlines, and saves actionable tasks.
+ */
 app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
   try {
     const {
@@ -502,7 +561,7 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
       return res.status(400).json({ detail: { success: false, message: 'Invalid port number.' } });
     }
 
-    // Clamp limits to protect memory and timeout bounds
+    // Clamp limits to protect server memory and network timeout bounds
     const clampedMaxEmails = Math.min(Math.max(parseInt(max_emails, 10) || 20, 1), 50);
     const clampedDays = Math.min(Math.max(parseInt(days, 10) || 30, 1), 90);
     const sanitizedSearch = String(search_query).slice(0, 50).trim() || 'ALL';
@@ -526,36 +585,11 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
   }
 });
 
-// POST /api/python/extract (Direct Python Model invocation bridge) - Validated & bounded
-app.post('/api/python/extract', async (req, res) => {
-  try {
-    const { subject = '', sender = '', body = '', sent_at = null } = req.body || {};
-    
-    // Bounds check to protect child process execution
-    const safeSubject = String(subject).slice(0, 300);
-    const safeSender = String(sender).slice(0, 255);
-    const safeBody = String(body).slice(0, 50000);
-
-    const result = await executePythonExtractor({
-      subject: safeSubject,
-      sender: safeSender,
-      body: safeBody,
-      sent_at
-    });
-
-    res.json({
-      engine: 'Python NLP Model Bridge',
-      result
-    });
-  } catch (err) {
-    console.error('Python bridge error:', err.message);
-    res.status(500).json({ detail: process.env.NODE_ENV === 'production' ? 'Python model extraction failed' : err.message });
-  }
-});
-
-// SPA Fallback for client-side routing (non-API routes)
+// ----------------------------------------------------------------------------
+// 8. CLIENT-SIDE ROUTING (SPA FALLBACK)
+// ----------------------------------------------------------------------------
 if (HAS_FRONTEND) {
-  app.get('*', (req, res, next) => {
+  app.get('*', (req, res) => {
     if (req.path.startsWith('/api')) {
       return res.status(404).json({ detail: 'API endpoint not found' });
     }
@@ -563,16 +597,18 @@ if (HAS_FRONTEND) {
   });
 }
 
-// Global process safety handlers
+// ----------------------------------------------------------------------------
+// 9. PROCESS SAFETY & LIFECYCLE MANAGEMENT
+// ----------------------------------------------------------------------------
 process.on('uncaughtException', (err) => {
   console.warn('⚠️ Process caught unhandled exception:', err.message);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
   console.warn('⚠️ Process caught unhandled rejection:', reason);
 });
 
-// Start server if running as standalone process (Render, Docker, local), bypass listen in serverless (Vercel)
+// Start standalone listener when running locally or in long-running container
 let serverInstance = null;
 const isServerless = Boolean(process.env.VERCEL || process.env.NOW_REGION);
 
@@ -584,7 +620,6 @@ if (!isServerless) {
         console.log(`🚀 Student Deadline Radar (Node.js Backend) Running`);
         console.log(`📡 URL: http://127.0.0.1:${PORT}`);
         console.log(`🌐 Frontend Static Serving: ${HAS_FRONTEND ? 'Active (' + FRONTEND_DIST + ')' : 'Standby (Build frontend to enable)'}`);
-        console.log(`🐍 Python Model Bridge: Active & Ready`);
         console.log(`====================================================`);
       });
 
@@ -597,7 +632,7 @@ if (!isServerless) {
         }
       });
 
-      // Graceful shutdown handling for container and cloud environments
+      // Graceful shutdown handling
       const handleShutdown = async (signal) => {
         console.log(`\n🛑 Received ${signal}. Shutting down gracefully...`);
         if (serverInstance) {
@@ -623,4 +658,5 @@ if (!isServerless) {
     });
 }
 
+// Export Express app for Vercel Serverless Function entrypoint (api/index.js)
 module.exports = app;

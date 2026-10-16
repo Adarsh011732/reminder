@@ -61,6 +61,7 @@ checks.txt
 *.sw?
 
 # 8. Operating System & IDE Files
+.agents/
 .DS_Store
 Thumbs.db
 desktop.ini
