@@ -1,0 +1,17 @@
+node_modules
+*/node_modules
+dist
+*/dist
+.git
+.gitignore
+.env
+*.db
+*.sqlite
+*.log
+__pycache__
+*/__pycache__
+.venv
+Dockerfile*
+docker-compose*
+README.md
+DEPLOYMENT.md

@@ -1,0 +1,73 @@
+# ==========================================
+# Student Deadline Radar - .gitignore
+# ==========================================
+
+# 1. Dependencies
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+
+# 2. Production Build Artifacts
+dist/
+*/dist/
+dist-ssr/
+build/
+.vercel/
+
+# 3. Local Databases & Persistent Storage
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+backend/deadlines.db
+
+# 4. Environment Variables & Secrets (NEVER COMMIT)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+!*.env.example
+
+# 5. Python Cache & Virtual Environments
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# 6. Runtime Logs & Diagnostics
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 7. Temporary, Generated & Scratch Files
+Checks.txt
+checks.txt
+*.pdf
+*.tmp
+*.bak
+*.sw?
+
+# 8. Operating System & IDE Files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

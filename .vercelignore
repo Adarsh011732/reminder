@@ -1,0 +1,15 @@
+# Vercel Deployment Optimization - Ignore non-runtime assets
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+backend/deadlines.db
+*.pdf
+Dockerfile
+docker-compose.yml
+render.yaml
+netlify.toml
+docs/
+.env*
+node_modules/
+*/node_modules/
