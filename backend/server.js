@@ -121,6 +121,20 @@ app.use(cors({
 // Restrict request body buffer to 500kb to mitigate memory-exhaustion DoS attacks
 app.use(express.json({ limit: '500kb' }));
 
+// Ensure SQLite database & seed directives are initialized on serverless cold starts
+let isDbInitialized = false;
+app.use(async (req, res, next) => {
+  if (!isDbInitialized) {
+    try {
+      await initDb();
+      isDbInitialized = true;
+    } catch (err) {
+      console.warn('DB cold-start init warning:', err.message);
+    }
+  }
+  next();
+});
+
 // Apply rate limiting tiers to endpoints
 app.use('/api/', generalLimiter);
 app.use('/api/mailbox/', sensitiveLimiter);
