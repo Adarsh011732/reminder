@@ -1,7 +1,57 @@
 /**
  * Browser Push Notification Service for Student Deadline Radar
- * Handles permission requests, native desktop notifications, and deadline alerts.
+ * Handles permission requests, native desktop notifications, Service Worker fallback,
+ * and in-app visual alert event broadcasting.
  */
+
+// Play subtle, elegant 2-tone notification chime via Web Audio API
+export function playNotificationChime() {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+
+    const now = ctx.currentTime;
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, now); // D5
+    osc1.frequency.exponentialRampToValueAtTime(880, now + 0.12); // A5
+
+    osc2.type = 'triangle';
+    osc2.frequency.setValueAtTime(880, now + 0.12);
+
+    gain.gain.setValueAtTime(0.01, now);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+    osc1.connect(gain);
+    osc2.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc1.start(now);
+    osc2.start(now + 0.1);
+    osc1.stop(now + 0.35);
+    osc2.stop(now + 0.35);
+  } catch (e) {
+    // AudioContext blocked or unsupported, fail silently
+  }
+}
+
+// Register service worker if available in browser
+export async function registerServiceWorker() {
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      return reg;
+    } catch (err) {
+      console.warn('Service worker registration error:', err.message);
+    }
+  }
+  return null;
+}
 
 // Request notification permission from browser
 export async function requestNotificationPermission() {
@@ -15,12 +65,15 @@ export async function requestNotificationPermission() {
 
   try {
     const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      await registerServiceWorker();
+    }
     return {
       supported: true,
       granted: permission === 'granted',
       status: permission,
       message: permission === 'granted'
-        ? 'Notifications enabled! You will receive alerts for critical deadlines.'
+        ? 'Notifications enabled! You will receive instant alerts for critical deadlines.'
         : 'Notification permission denied or dismissed.'
     };
   } catch (err) {
@@ -41,50 +94,86 @@ export function getNotificationPermissionState() {
   return Notification.permission; // 'default', 'granted', 'denied'
 }
 
-// Dispatch a desktop push notification
-export function dispatchPushNotification({ title, body, icon = '/favicon.ico', tag, data }) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') {
-    return false;
-  }
+/**
+ * Dispatches a notification across all available channels:
+ * 1. Native Desktop/Mobile Notification (via Service Worker or Window Notification API)
+ * 2. In-App Interactive Toast Banner (broadcast to React UI)
+ * 3. Audio Chime
+ */
+export async function dispatchPushNotification({ title, body, icon = '/favicon.svg', tag, data, task }) {
+  // Always trigger sound & in-app banner for guaranteed visibility (even if Windows Focus Assist suppresses OS toasts)
+  playNotificationChime();
 
-  try {
-    const notif = new Notification(title, {
-      body,
-      icon,
-      badge: icon,
-      tag: tag || `deadline_${Date.now()}`,
-      renotify: true,
-      requireInteraction: false,
-      data
-    });
-
-    notif.onclick = function () {
-      window.focus();
-      if (data?.url) {
-        window.open(data.url, '_blank');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('in-app-alert', {
+      detail: {
+        title,
+        body,
+        data,
+        task,
+        timestamp: Date.now()
       }
-      notif.close();
-    };
-
-    return true;
-  } catch (err) {
-    console.warn('Failed to send browser notification:', err);
-    return false;
+    }));
   }
+
+  // Attempt native OS notification if permission was granted
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      // Priority 1: Service Worker (supported on Android Chrome, macOS, and Windows PWA)
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, {
+            body,
+            icon,
+            badge: icon,
+            tag: tag || `deadline_${Date.now()}`,
+            renotify: true,
+            data
+          });
+          return true;
+        }
+      }
+
+      // Priority 2: Standard Window Notification constructor
+      const notif = new Notification(title, {
+        body,
+        icon,
+        badge: icon,
+        tag: tag || `deadline_${Date.now()}`,
+        renotify: true,
+        data
+      });
+
+      notif.onclick = function () {
+        window.focus();
+        if (data?.url) {
+          window.open(data.url, '_blank');
+        }
+        notif.close();
+      };
+      return true;
+    } catch (err) {
+      console.warn('Native notification suppressed or blocked:', err.message);
+    }
+  }
+
+  return true;
 }
 
 // Helper to trigger test notification
 export function triggerTestNotification(task) {
   const title = task?.title ? `🚨 Urgent: ${task.title}` : '🔔 Deadline Radar Alert Active';
   const body = task
-    ? `Action: ${task.action_required}\nDue: ${task.deadline_text_raw || 'Soon'}\nDepartment: ${task.sender || 'College'}`
+    ? `Action: ${task.action_required || 'Immediate directive'}\nDue: ${task.deadline_text_raw || 'Action date approaching'}`
     : 'Your browser push notifications are active and ready to alert you on critical academic dates.';
 
   return dispatchPushNotification({
     title,
     body,
-    tag: 'test_alert',
-    data: { url: task?.primary_link || window.location.href }
+    tag: 'radar_alert',
+    data: { url: task?.primary_link || window.location.href },
+    task
   });
 }
 
@@ -110,7 +199,7 @@ export function generateIcsCalendar(tasks) {
 
   validTasks.forEach((task) => {
     const deadline = new Date(task.deadline_iso);
-    const startDate = new Date(deadline.getTime() - 60 * 60 * 1000); // 1 hr before
+    const startDate = new Date(deadline.getTime() - 60 * 60 * 1000);
     const endDate = deadline;
     const now = new Date();
 

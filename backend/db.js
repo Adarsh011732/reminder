@@ -138,22 +138,29 @@ async function initDb() {
   // Seed initial tasks if table is empty (ensures rich UI on first launch)
   const countRow = await get('SELECT COUNT(*) as count FROM deadline_tasks');
   if (!countRow || countRow.count === 0) {
-    console.log('Seeding initial tasks into database...');
+    console.log('Seeding initial tasks into database in single transaction...');
     const initialTasks = getInitialTasks();
-    for (const t of initialTasks) {
-      await run(`
-        INSERT INTO deadline_tasks (
-          title, category, action_required, deadline_iso, deadline_text_raw,
-          deadline_exact, primary_link, sender, source_subject, raw_snippet,
-          urgency_tier, status, priority_score, confidence, email_thread_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        t.title, t.category, t.action_required, t.deadline_iso, t.deadline_text_raw,
-        t.deadline_exact, t.primary_link, t.sender, t.source_subject, t.raw_snippet,
-        t.urgency_tier, t.status, t.priority_score, t.confidence, t.email_thread_id
-      ]);
+    await run('BEGIN TRANSACTION');
+    try {
+      for (const t of initialTasks) {
+        await run(`
+          INSERT INTO deadline_tasks (
+            title, category, action_required, deadline_iso, deadline_text_raw,
+            deadline_exact, primary_link, sender, source_subject, raw_snippet,
+            urgency_tier, status, priority_score, confidence, email_thread_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          t.title, t.category, t.action_required, t.deadline_iso, t.deadline_text_raw,
+          t.deadline_exact, t.primary_link, t.sender, t.source_subject, t.raw_snippet,
+          t.urgency_tier, t.status, t.priority_score, t.confidence, t.email_thread_id
+        ]);
+      }
+      await run('COMMIT');
+      console.log(`Seeded ${initialTasks.length} initial tasks instantly.`);
+    } catch (txErr) {
+      await run('ROLLBACK');
+      console.error('Failed to seed tasks transaction:', txErr.message);
     }
-    console.log(`Seeded ${initialTasks.length} initial tasks.`);
   }
 }
 

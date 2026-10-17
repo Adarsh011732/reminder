@@ -352,7 +352,7 @@ function ruleBasedExtractor(subject, sender, body, sentAt = null) {
 }
 
 // Full AI extraction engine with Gemini Flash + rule-based fallback
-async function extractDeadlineFromEmail(subject, sender, body, sentAt = null) {
+async function extractDeadlineFromEmail(subject, sender, body, sentAt = null, userProvidedKey = null) {
   // Check if non-actionable before calling LLM
   if (isNonActionableEmail(subject, sender, body)) {
     return {
@@ -367,13 +367,18 @@ async function extractDeadlineFromEmail(subject, sender, body, sentAt = null) {
       primary_link: null,
       priority_score: 1,
       confidence: 0.99,
-      reasoning: 'Non-actionable system notification / security alert'
+      reasoning: 'Non-actionable system notification / security alert',
+      engine: 'Heuristic Filter',
+      is_ai: false
     };
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (userProvidedKey || process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
-    return ruleBasedExtractor(subject, sender, body, sentAt);
+    const fallback = ruleBasedExtractor(subject, sender, body, sentAt);
+    fallback.engine = 'Heuristic Regex Engine (Instant)';
+    fallback.is_ai = false;
+    return fallback;
   }
 
   try {
@@ -388,7 +393,7 @@ Email Metadata:
 - Links Found: ${JSON.stringify(links)}
 
 Email Content:
-${cleanText.substring(0, 4000)}
+${cleanText.substring(0, 3500)}
 
 Important Classification Taxonomy:
 - "registration": Registration for competitive platforms (TCS CodeVita, HackWithInfy, Unstop, NPTEL, SkillSprint, Bootcamp registration, Portals)
@@ -428,7 +433,7 @@ Return ONLY a valid JSON object matching:
           response_mime_type: "application/json"
         }
       },
-      { timeout: 12000 }
+      { timeout: 4500 }
     );
 
     const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -437,13 +442,19 @@ Return ONLY a valid JSON object matching:
       if (!parsed.primary_link && links.length > 0) {
         parsed.primary_link = links[0];
       }
+      parsed.engine = 'Google Gemini 1.5 Flash AI';
+      parsed.is_ai = true;
       return parsed;
     }
   } catch (err) {
-    console.warn('Gemini API extraction fallback to rule-based engine:', err.message);
+    const errorDetail = err.response?.data?.error?.message || err.message;
+    console.warn(`Gemini API error (${errorDetail}), fallback to heuristic engine.`);
   }
 
-  return ruleBasedExtractor(subject, sender, body, sentAt);
+  const ruleResult = ruleBasedExtractor(subject, sender, body, sentAt);
+  ruleResult.engine = 'Heuristic Regex Engine (Fallback)';
+  ruleResult.is_ai = false;
+  return ruleResult;
 }
 
 module.exports = {

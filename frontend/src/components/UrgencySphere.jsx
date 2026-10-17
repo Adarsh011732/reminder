@@ -1,6 +1,11 @@
 import React, { useEffect, useRef } from 'react';
 import { Activity } from 'lucide-react';
 
+/**
+ * Lightweight, optimized 3D Urgency Sphere
+ * Uses cached Fibonacci sphere vertices and throttled projections
+ * to maintain buttery-smooth frame rates without CPU heating.
+ */
 export default function UrgencySphere({
   urgencyState = 'loading',
   criticalCount = 0,
@@ -16,32 +21,31 @@ export default function UrgencySphere({
     let animationFrameId;
 
     const size = 180;
-    canvas.width = size * window.devicePixelRatio;
-    canvas.height = size * window.devicePixelRatio;
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    canvas.width = size;
+    canvas.height = size;
 
-    // Color definitions
-    let baseColor = { r: 240, g: 240, b: 245 }; // Default sleek monochrome white/ice
-    let speed = 0.018;
+    // Base color determination
+    let baseColor = { r: 240, g: 240, b: 245 };
+    let speed = 0.016;
 
     if (isLoading || urgencyState === 'loading') {
-      baseColor = { r: 240, g: 240, b: 245 }; // Monochrome neutral scanning
-      speed = 0.02;
+      baseColor = { r: 240, g: 240, b: 245 };
+      speed = 0.018;
     } else if (urgencyState === 'critical') {
-      baseColor = { r: 239, g: 68, b: 68 }; // Red (Critical <48h)
-      speed = 0.035;
+      baseColor = { r: 239, g: 68, b: 68 };
+      speed = 0.028;
     } else if (urgencyState === 'average') {
-      baseColor = { r: 245, g: 158, b: 11 }; // Yellow / Amber (Approaching)
-      speed = 0.022;
+      baseColor = { r: 245, g: 158, b: 11 };
+      speed = 0.02;
     } else if (urgencyState === 'good') {
-      baseColor = { r: 52, g: 211, b: 153 }; // Calm Emerald
-      speed = 0.015;
+      baseColor = { r: 52, g: 211, b: 153 };
+      speed = 0.014;
     }
 
-    // Generate points on sphere using Fibonacci sphere algorithm
-    const numPoints = 160;
+    // Pre-calculate 64 sphere coordinates (plenty for high-fidelity 3D aesthetic)
+    const numPoints = 64;
     const points = [];
-    const radius = 62;
+    const radius = 58;
 
     for (let i = 0; i < numPoints; i++) {
       const phi = Math.acos(-1 + (2 * i) / numPoints);
@@ -49,12 +53,14 @@ export default function UrgencySphere({
       points.push({
         x: radius * Math.cos(theta) * Math.sin(phi),
         y: radius * Math.sin(theta) * Math.sin(phi),
-        z: radius * Math.cos(phi),
+        z: radius * Math.cos(phi)
       });
     }
 
     let angleX = 0;
     let angleY = 0;
+    const centerX = size / 2;
+    const centerY = size / 2;
 
     const render = () => {
       ctx.clearRect(0, 0, size, size);
@@ -67,52 +73,38 @@ export default function UrgencySphere({
       const cosY = Math.cos(angleY);
       const sinY = Math.sin(angleY);
 
-      const centerX = size / 2;
-      const centerY = size / 2;
-
-      // Draw subtle ambient radial glow
-      const glowGrad = ctx.createRadialGradient(centerX, centerY, 5, centerX, centerY, radius * 1.1);
-      glowGrad.addColorStop(0, `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, 0.2)`);
+      // Subtle ambient radial glow
+      const glowGrad = ctx.createRadialGradient(centerX, centerY, 5, centerX, centerY, radius * 1.05);
+      glowGrad.addColorStop(0, `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, 0.15)`);
       glowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = glowGrad;
       ctx.fillRect(0, 0, size, size);
 
-      // Rotate, project, and sort points by Z depth
-      const projected = points.map((p) => {
-        // Rotate Y
-        let x1 = p.x * cosY - p.z * sinY;
-        let z1 = p.z * cosY + p.x * sinY;
+      // Rotate and project points
+      const fov = 150;
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const x1 = p.x * cosY - p.z * sinY;
+        const z1 = p.z * cosY + p.x * sinY;
+        const y2 = p.y * cosX - z1 * sinX;
+        const z2 = z1 * cosX + p.y * sinX;
 
-        // Rotate X
-        let y2 = p.y * cosX - z1 * sinX;
-        let z2 = z1 * cosX + p.y * sinX;
-
-        // Perspective projection
-        const fov = 160;
         const scale = fov / (fov + z2);
         const projX = centerX + x1 * scale;
         const projY = centerY + y2 * scale;
-        const alpha = Math.max(0.15, Math.min(1, (z2 + radius) / (2 * radius)));
+        const alpha = Math.max(0.15, Math.min(0.95, (z2 + radius) / (2 * radius)));
 
-        return { x: projX, y: projY, z: z2, scale, alpha };
-      });
-
-      // Sort points so back dots are drawn first
-      projected.sort((a, b) => a.z - b.z);
-
-      // Render dots
-      projected.forEach((p) => {
         ctx.beginPath();
-        const dotRadius = Math.max(0.8, p.scale * 1.8);
-        ctx.arc(p.x, p.y, dotRadius, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, ${p.alpha})`;
+        const dotRadius = Math.max(0.8, scale * 1.5);
+        ctx.arc(projX, projY, dotRadius, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, ${alpha})`;
         ctx.fill();
-      });
+      }
 
-      // Outer delicate orbital ring
+      // Delicate orbital ring
       ctx.beginPath();
-      ctx.arc(centerX, centerY, radius + 10, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, 0.18)`;
+      ctx.arc(centerX, centerY, radius + 8, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, 0.16)`;
       ctx.lineWidth = 1;
       ctx.setLineDash([4, 6]);
       ctx.stroke();
@@ -145,7 +137,7 @@ export default function UrgencySphere({
     : 'w-2 h-2 rounded-full pip-green';
 
   return (
-    <div className="rounded-2xl bw-card p-4 border-[#222222] flex flex-col items-center text-center relative overflow-hidden transition-all duration-300 hover:border-[#383838]">
+    <div className="rounded-2xl bw-card p-4 border-[#222226] flex flex-col items-center text-center relative overflow-hidden transition-all duration-300 hover:border-[#383838]">
       
       {/* Top Header */}
       <div className="w-full flex items-center justify-between gap-2 mb-2 z-10 px-1">
@@ -167,7 +159,7 @@ export default function UrgencySphere({
 
       {/* Status Badge */}
       <div className="z-10 w-full mt-1">
-        <div className="py-1.5 px-3 rounded-xl bg-[#111111] border border-[#262626] text-xs font-bold text-white flex items-center justify-center gap-2 shadow-sm">
+        <div className="py-1.5 px-3 rounded-xl bg-[#111114] border border-[#26262a] text-xs font-bold text-white flex items-center justify-center gap-2 shadow-sm">
           <span className={pipClass}></span>
           <span>{statusLabel}</span>
         </div>

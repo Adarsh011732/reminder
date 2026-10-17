@@ -231,10 +231,10 @@ app.get('/api/deadlines', async (req, res) => {
         const newUrgency = computeUrgencyTier(task.deadline_iso);
         if (task.urgency_tier !== newUrgency) {
           task.urgency_tier = newUrgency;
-          await run('UPDATE deadline_tasks SET urgency_tier = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
+          run('UPDATE deadline_tasks SET urgency_tier = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
             newUrgency,
             task.id
-          ]);
+          ]).catch(() => {});
         }
       }
     }
@@ -255,15 +255,17 @@ app.get('/api/deadlines', async (req, res) => {
 /**
  * POST /api/deadlines/parse-raw
  * Parses a single raw email notice string using the Gemini AI + Heuristic Regex pipeline.
+ * Accepts optional Gemini API key via header 'x-gemini-key' or request body 'gemini_api_key'.
  * Optional query parameter: auto_save=true to persist directly into database.
  */
 app.post('/api/deadlines/parse-raw', async (req, res) => {
   try {
-    const { subject = '', sender = '', body = '', sent_at = null } = req.body || {};
+    const { subject = '', sender = '', body = '', sent_at = null, gemini_api_key = null } = req.body || {};
     const autoSave = req.query.auto_save === 'true' || req.body.auto_save === true;
+    const userApiKey = req.headers['x-gemini-key'] || gemini_api_key;
 
     // Execute through dual-tier extraction engine (Gemini Flash with automatic Heuristic fallback)
-    const extracted = await extractDeadlineFromEmail(subject, sender, body, sent_at);
+    const extracted = await extractDeadlineFromEmail(subject, sender, body, sent_at, userApiKey);
 
     let savedTask = null;
     if (autoSave && extracted && extracted.is_actionable) {

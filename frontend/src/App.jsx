@@ -27,7 +27,7 @@ import AnimatedBackground from './components/AnimatedBackground';
 import UrgencySphere from './components/UrgencySphere';
 import LoginPage from './components/LoginPage';
 import { requestNotificationPermission, triggerTestNotification } from './utils/notificationService';
-import { Sparkles, Mail, ShieldCheck, Inbox, RefreshCw, CheckCircle2, AlertTriangle, GraduationCap, Briefcase, Code2, Calendar, Archive, RotateCcw, Check } from 'lucide-react';
+import { Sparkles, Mail, ShieldCheck, Inbox, RefreshCw, CheckCircle2, AlertTriangle, GraduationCap, Briefcase, Code2, Calendar, Archive, RotateCcw, Check, Bell, X } from 'lucide-react';
 import { apiFetch } from './utils/apiClient';
 
 export default function App() {
@@ -89,18 +89,47 @@ export default function App() {
   const [selectedUrgency, setSelectedUrgency] = useState('all');
   const [sortBy, setSortBy] = useState('urgency'); // urgency, deadline, priority
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   // Modals
   const [isPlaygroundOpen, setIsPlaygroundOpen] = useState(false);
   const [isConnectMailboxOpen, setIsConnectMailboxOpen] = useState(false);
   const [isCalendarHubOpen, setIsCalendarHubOpen] = useState(false);
   const [selectedDetailTask, setSelectedDetailTask] = useState(null);
+  const [inAppAlert, setInAppAlert] = useState(null);
+
+  // Debounce search input to avoid request spamming (250ms delay)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Register Service Worker on initial mount
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+    }
+
+    const handleInAppAlert = (e) => {
+      if (e.detail) {
+        setInAppAlert(e.detail);
+        setTimeout(() => {
+          setInAppAlert((curr) => (curr?.timestamp === e.detail.timestamp ? null : curr));
+        }, 6000);
+      }
+    };
+
+    window.addEventListener('in-app-alert', handleInAppAlert);
+    return () => window.removeEventListener('in-app-alert', handleInAppAlert);
+  }, []);
 
   // Fetch initial tasks and stats
   const fetchData = async () => {
     try {
       const [activeRes, doneRes, statsRes, samplesRes] = await Promise.all([
-        apiFetch(`/api/deadlines?status=active&category=${selectedCategory}&urgency=${selectedUrgency}&search=${encodeURIComponent(searchQuery)}`),
+        apiFetch(`/api/deadlines?status=active&category=${selectedCategory}&urgency=${selectedUrgency}&search=${encodeURIComponent(debouncedSearch)}`),
         apiFetch(`/api/deadlines?status=done`),
         apiFetch('/api/stats'),
         apiFetch('/api/sample-emails')
@@ -136,7 +165,7 @@ export default function App() {
     if (currentUser) {
       fetchData();
     }
-  }, [currentUser, selectedCategory, selectedUrgency, searchQuery]);
+  }, [currentUser, selectedCategory, selectedUrgency, debouncedSearch]);
 
   // Push notifications auto-check on critical deadlines
   useEffect(() => {
@@ -222,15 +251,21 @@ export default function App() {
       if (result.granted) {
         setPushEnabled(true);
         localStorage.setItem('student_radar_push_enabled', 'true');
+        setSyncToast({ type: 'success', message: '🔔 Desktop & In-App push notifications active!' });
+        setTimeout(() => setSyncToast(null), 3500);
         triggerTestNotification(activeTasks[0]);
       } else {
         setPushEnabled(false);
         localStorage.setItem('student_radar_push_enabled', 'false');
+        setSyncToast({ type: 'error', message: '⚠️ Notification permission blocked or denied in browser settings.' });
+        setTimeout(() => setSyncToast(null), 4500);
         setIsCalendarHubOpen(true);
       }
     } else {
       setPushEnabled(false);
       localStorage.setItem('student_radar_push_enabled', 'false');
+      setSyncToast({ type: 'info', message: '🔕 Push notifications paused.' });
+      setTimeout(() => setSyncToast(null), 3000);
     }
   };
 
@@ -379,6 +414,40 @@ export default function App() {
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           )}
           <span className="font-semibold">{syncToast.message}</span>
+        </div>
+      )}
+
+      {/* Floating Urgent In-App Push Notification Alert */}
+      {inAppAlert && (
+        <div className="fixed top-20 right-4 sm:right-6 z-50 max-w-sm w-full p-4 rounded-2xl bg-[#0e0e12] border border-amber-500/50 text-white shadow-2xl animate-slide-down flex items-start gap-3 backdrop-blur-xl">
+          <div className="p-2.5 rounded-xl bg-amber-950/80 text-amber-400 border border-amber-800 shrink-0">
+            <Bell className="w-4 h-4 animate-bounce" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-bold text-white truncate">{inAppAlert.title}</h4>
+              <button
+                type="button"
+                onClick={() => setInAppAlert(null)}
+                className="text-neutral-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <p className="text-[11px] text-neutral-300 whitespace-pre-line mt-1 line-clamp-3 leading-relaxed">
+              {inAppAlert.body}
+            </p>
+            {inAppAlert.task?.primary_link && (
+              <a
+                href={inAppAlert.task.primary_link}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-400 hover:text-sky-300 mt-2 underline"
+              >
+                <span>Open Registration Form &rarr;</span>
+              </a>
+            )}
+          </div>
         </div>
       )}
 
