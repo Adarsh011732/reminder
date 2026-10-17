@@ -144,22 +144,14 @@ app.use('/api/deadlines/parse-raw', sensitiveLimiter);
  * Health check endpoint for uptime monitoring and cloud diagnostics
  */
 app.get(['/health', '/api/health'], async (req, res) => {
-  const dbMod = require('./db');
   let dbStatus = 'ok';
-  let dbError = null;
   let taskCount = 0;
   try {
-    if (typeof dbMod.initDb === 'function') {
-      await dbMod.initDb();
-      const row = await dbMod.get('SELECT COUNT(*) as count FROM deadline_tasks');
-      taskCount = row ? row.count : 0;
-    } else {
-      dbStatus = 'error';
-      dbError = `initDb is ${typeof dbMod.initDb}`;
-    }
+    await initDb();
+    const row = await get('SELECT COUNT(*) as count FROM deadline_tasks');
+    taskCount = row ? row.count : 0;
   } catch (err) {
-    dbStatus = 'error';
-    dbError = err.message;
+    dbStatus = 'degraded';
   }
 
   res.status(200).json({
@@ -168,15 +160,8 @@ app.get(['/health', '/api/health'], async (req, res) => {
     timestamp: new Date().toISOString(),
     service: 'Student Deadline Radar',
     db_status: dbStatus,
-    db_error: dbError,
-    db_path: dbMod.DB_PATH || 'undefined',
-    task_count: taskCount,
-    db_keys: Object.keys(dbMod),
-    initDb_type: typeof dbMod.initDb,
-    resolved_db_path: (() => { try { return require.resolve('./db'); } catch(e) { return e.message; } })(),
-    has_gemini_key: Boolean(process.env.GEMINI_API_KEY),
-    node_env: process.env.NODE_ENV,
-    is_vercel: Boolean(process.env.VERCEL || process.env.NOW_REGION)
+    active_tasks: taskCount,
+    has_gemini_key: Boolean(process.env.GEMINI_API_KEY)
   });
 });
 
