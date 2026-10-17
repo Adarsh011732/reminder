@@ -51,6 +51,16 @@
   - [x] Configured `vercel.json` routing `/api/*` to serverless function and SPA fallback for client pages.
   - [x] Added Vercel writable `/tmp/deadlines.db` fallback to prevent read-only filesystem errors.
 
+### 🎫 RADAR-105: Runtime Performance Optimization & Dual-Channel Notification Engine
+- **Priority:** `P0 - Critical` | **Status:** `✅ Completed`
+- **Target:** [`frontend/src/components/AnimatedBackground.jsx`](file:///c:/Dev_Projects/Reminder!/frontend/src/components/AnimatedBackground.jsx), [`frontend/src/components/UrgencySphere.jsx`](file:///c:/Dev_Projects/Reminder!/frontend/src/components/UrgencySphere.jsx), [`frontend/src/utils/notificationService.js`](file:///c:/Dev_Projects/Reminder!/frontend/src/utils/notificationService.js), [`backend/services/aiExtractor.js`](file:///c:/Dev_Projects/Reminder!/backend/services/aiExtractor.js)
+- **Description:** Optimize canvas rendering loops from 10,000+ calculations/frame to <50, debounce search queries, add Service Worker and in-app visual alert banners, and support custom Gemini API keys.
+- **Acceptance Criteria:**
+  - [x] Capped canvas nodes to 36 and removed expensive `shadowBlur` per-frame operations.
+  - [x] Debounced search queries by 250ms to eliminate concurrent backend request storms.
+  - [x] Created `sw.js` and implemented audio chime + in-app toast alerts for guaranteed notification visibility.
+  - [x] Reduced Gemini API timeout to 4.5s and added custom key configuration in the playground modal.
+
 ---
 
 ## Epic 2: Core Task Management & Dashboard
