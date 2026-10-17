@@ -115,7 +115,7 @@ const allowedOrigins = process.env.CORS_ORIGIN
 app.use(cors({
   origin: allowedOrigins.length === 1 && allowedOrigins[0] === '*' ? '*' : allowedOrigins,
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-gemini-key']
 }));
 
 // Restrict request body buffer to 500kb to mitigate memory-exhaustion DoS attacks
@@ -552,10 +552,13 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
       app_password = '',
       imap_server = 'imap.gmail.com',
       port = 993,
-      max_emails = 30,
+      max_emails = 15,
       days = 30,
-      search_query = 'ALL'
+      search_query = 'ALL',
+      gemini_api_key = null
     } = req.body || {};
+
+    const userGeminiKey = (req.headers['x-gemini-key'] || gemini_api_key || process.env.GEMINI_API_KEY || '').trim();
 
     const trimmedEmail = String(email).trim().toLowerCase();
     if (!trimmedEmail || !EMAIL_REGEX.test(trimmedEmail)) {
@@ -577,8 +580,8 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
       return res.status(400).json({ detail: { success: false, message: 'Invalid port number.' } });
     }
 
-    // Clamp limits to protect server memory and network timeout bounds
-    const clampedMaxEmails = Math.min(Math.max(parseInt(max_emails, 10) || 20, 1), 50);
+    // Clamp limits to protect server memory and stay safely within Vercel's serverless timeout
+    const clampedMaxEmails = Math.min(Math.max(parseInt(max_emails, 10) || 12, 1), 20);
     const clampedDays = Math.min(Math.max(parseInt(days, 10) || 30, 1), 90);
     const sanitizedSearch = String(search_query).slice(0, 50).trim() || 'ALL';
 
@@ -589,7 +592,8 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
       port: numPort,
       maxEmails: clampedMaxEmails,
       days: clampedDays,
-      searchQuery: sanitizedSearch
+      searchQuery: sanitizedSearch,
+      geminiApiKey: userGeminiKey || null
     });
 
     if (!result.success) {

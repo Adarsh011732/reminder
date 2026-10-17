@@ -189,16 +189,23 @@ export default function App() {
 
     try {
       if (currentUser && currentUser.app_password) {
+        const storedKey = (localStorage.getItem('student_radar_gemini_key') || '').trim();
+        const headers = { 'Content-Type': 'application/json' };
+        if (storedKey) {
+          headers['x-gemini-key'] = storedKey;
+        }
+
         const res = await apiFetch('/api/mailbox/fetch-real-emails', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             email: currentUser.email,
             app_password: currentUser.app_password,
             imap_server: currentUser.imap_server || 'imap.gmail.com',
             port: currentUser.port || 993,
-            max_emails: 20,
-            search_query: 'ALL'
+            max_emails: 15,
+            search_query: 'ALL',
+            gemini_api_key: storedKey || undefined
           })
         });
 

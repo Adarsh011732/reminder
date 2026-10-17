@@ -25,6 +25,25 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
   const [scanResult, setScanResult] = useState(null);
   const [showHelp, setShowHelp] = useState(false);
 
+  const [geminiKey, setGeminiKey] = useState(() => {
+    try {
+      return localStorage.getItem('student_radar_gemini_key') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const handleGeminiKeyChange = (val) => {
+    setGeminiKey(val);
+    try {
+      if (val.trim()) {
+        localStorage.setItem('student_radar_gemini_key', val.trim());
+      } else {
+        localStorage.removeItem('student_radar_gemini_key');
+      }
+    } catch {}
+  };
+
   if (!isOpen) return null;
 
   const handlePresetChange = (presetId) => {
@@ -78,17 +97,24 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
     setScanResult(null);
 
     try {
+      const storedKey = (localStorage.getItem('student_radar_gemini_key') || '').trim();
+      const headers = { 'Content-Type': 'application/json' };
+      if (storedKey) {
+        headers['x-gemini-key'] = storedKey;
+      }
+
       const res = await apiFetch('/api/mailbox/fetch-real-emails', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           email: email.trim(),
           app_password: appPassword.trim(),
           imap_server: imapServer.trim(),
           port: Number(port),
-          max_emails: Number(maxEmails),
+          max_emails: Math.min(Number(maxEmails) || 15, 20),
           days: Number(scanDays),
-          search_query: searchQuery
+          search_query: searchQuery,
+          gemini_api_key: storedKey || undefined
         })
       });
 
@@ -267,12 +293,32 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
                   onChange={(e) => setMaxEmails(Number(e.target.value))}
                   className="w-full px-3 py-2 bg-[#121212] border border-[#262626] rounded-xl text-xs text-white focus:outline-none focus:border-white cursor-pointer"
                 >
-                  <option value={15}>15 emails</option>
+                  <option value={15}>15 emails (Fastest, ~1.5s)</option>
+                  <option value={20}>20 emails</option>
                   <option value={30}>30 emails</option>
-                  <option value={50}>50 emails</option>
-                  <option value={100}>100 emails</option>
                 </select>
               </div>
+            </div>
+
+            {/* Optional Gemini API Key */}
+            <div className="pt-2 border-t border-[#1f1f1f]">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[11px] font-semibold text-neutral-300 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-neutral-400" />
+                  <span>Google Gemini API Key (Optional)</span>
+                </label>
+                <span className="text-[10px] text-neutral-500 font-mono">Gemini 1.5 Flash</span>
+              </div>
+              <input
+                type="password"
+                placeholder="AIzaSy... (leave blank to use Smart Heuristic Regex Engine)"
+                value={geminiKey}
+                onChange={(e) => handleGeminiKeyChange(e.target.value)}
+                className="w-full px-3 py-2 bg-[#121212] border border-[#262626] rounded-xl text-xs text-white placeholder-neutral-600 focus:outline-none focus:border-white font-mono"
+              />
+              <p className="text-[10px] text-neutral-500 mt-1">
+                Saved privately in your browser. All live mailbox scans and AI analyses will route to this key.
+              </p>
             </div>
 
           </div>

@@ -57,10 +57,11 @@ async function fetchAndProcessRealEmails({
   appPassword,
   server = 'imap.gmail.com',
   port = 993,
-  maxEmails = 30,
+  maxEmails = 15,
   days = 30,
   sinceDays = null,
-  searchQuery = 'ALL'
+  searchQuery = 'ALL',
+  geminiApiKey = null
 }) {
   const client = new ImapFlow({
     host: server,
@@ -98,36 +99,32 @@ async function fetchAndProcessRealEmails({
         };
       }
 
-      const activeDays = parseInt(sinceDays || days, 10);
-      const limitCount = Math.min(Math.max(1, parseInt(maxEmails, 10) || 30), 100);
+      // Fast sequence range fetching: Download ONLY the latest 12-15 emails.
+      // Avoids downloading 300+ full MIME bodies across 30 days which triggers Vercel serverless timeouts.
+      const limitCount = Math.min(Math.max(1, parseInt(maxEmails, 10) || 12), 20);
       let fetchedMessages = [];
 
-      if (activeDays && activeDays > 0) {
-        // IMAP server-side date filtering: Fetches emails received in the last N days
-        const sinceDate = new Date();
-        sinceDate.setDate(sinceDate.getDate() - activeDays);
-        sinceDate.setHours(0, 0, 0, 0);
-
-        const searchCriteria = { since: sinceDate };
-        if (searchQuery === 'UNSEEN') {
-          searchCriteria.unseen = true;
+      if (searchQuery === 'UNSEEN') {
+        try {
+          const unseenUids = await client.search({ unseen: true });
+          if (Array.isArray(unseenUids) && unseenUids.length > 0) {
+            const targetUids = unseenUids.slice(-limitCount);
+            for await (const message of client.fetch(targetUids, {
+              uid: true,
+              flags: true,
+              envelope: true,
+              source: true
+            }, { uid: true })) {
+              fetchedMessages.push(message);
+            }
+          }
+        } catch (searchErr) {
+          console.warn('[IMAP UNSEEN search fallback]:', searchErr.message);
         }
+      }
 
-        for await (const message of client.fetch(searchCriteria, {
-          uid: true,
-          flags: true,
-          envelope: true,
-          source: true
-        })) {
-          fetchedMessages.push(message);
-        }
-
-        // Keep the latest N emails from this 30-day period
-        if (fetchedMessages.length > limitCount) {
-          fetchedMessages = fetchedMessages.slice(-limitCount);
-        }
-      } else {
-        // Fast sequence range indexing for recent emails
+      // If no unseen messages found or general sync: use ultra-fast sequence range fetching
+      if (fetchedMessages.length === 0) {
         const startSeq = Math.max(1, totalMessages - limitCount + 1);
         const seqRange = `${startSeq}:*`;
 
@@ -139,6 +136,16 @@ async function fetchAndProcessRealEmails({
         })) {
           fetchedMessages.push(message);
         }
+      }
+
+      // Optional date cutoff check: skip messages older than requested days if envelope date exists
+      const activeDays = parseInt(sinceDays || days, 10);
+      if (activeDays && activeDays > 0) {
+        const cutoffTime = Date.now() - activeDays * 24 * 60 * 60 * 1000;
+        fetchedMessages = fetchedMessages.filter(msg => {
+          if (!msg.envelope?.date) return true;
+          return new Date(msg.envelope.date).getTime() >= cutoffTime;
+        });
       }
 
       // Reverse so newest are processed first
@@ -163,12 +170,13 @@ async function fetchAndProcessRealEmails({
           const bodyText = parsed.text || (parsed.html ? parsed.html.replace(/<[^>]*>?/gm, ' ') : '');
           if (!bodyText.trim()) return null;
 
-          // Run AI / heuristic extractor
+          // Run AI / heuristic extractor with optional student or server Gemini API key
           const extracted = await extractDeadlineFromEmail(
             subject,
             sender,
             bodyText.substring(0, 4000),
-            dateHeader
+            dateHeader,
+            geminiApiKey
           );
 
           const isActionable = Boolean(extracted && extracted.is_actionable);

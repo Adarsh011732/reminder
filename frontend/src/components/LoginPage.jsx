@@ -79,17 +79,24 @@ export default function LoginPage({ onLoginSuccess, onGuestLogin }) {
         onLoginSuccess(userData);
 
         // 2. Trigger mailbox scan asynchronously in background (academic filtered)
+        const storedKey = (localStorage.getItem('student_radar_gemini_key') || '').trim();
+        const scanHeaders = { 'Content-Type': 'application/json' };
+        if (storedKey) {
+          scanHeaders['x-gemini-key'] = storedKey;
+        }
+
         apiFetch('/api/mailbox/fetch-real-emails', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: scanHeaders,
           body: JSON.stringify({
             email: email.trim(),
             app_password: appPassword.trim(),
             imap_server: imapServer.trim(),
             port: Number(port),
-            max_emails: 30,
+            max_emails: 15,
             days: Number(daysToScan),
-            search_query: 'ALL'
+            search_query: 'ALL',
+            gemini_api_key: storedKey || undefined
           })
         }).catch((scanErr) => console.error('Background mailbox sync error:', scanErr));
 
