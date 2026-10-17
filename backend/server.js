@@ -19,7 +19,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 require('dotenv').config();
 
-const { db, run, get, all, initDb, closeDb } = require('./db');
+const { db, DB_PATH, run, get, all, initDb, closeDb } = require('./db');
 const { computeUrgencyTier, extractDeadlineFromEmail } = require('./services/aiExtractor');
 const { testImapConnection, fetchAndProcessRealEmails } = require('./services/imapService');
 const { SAMPLE_STUDENT_EMAILS } = require('./services/mockData');
@@ -122,15 +122,11 @@ app.use(cors({
 app.use(express.json({ limit: '500kb' }));
 
 // Ensure SQLite database & seed directives are initialized on serverless cold starts
-let isDbInitialized = false;
 app.use(async (req, res, next) => {
-  if (!isDbInitialized) {
-    try {
-      await initDb();
-      isDbInitialized = true;
-    } catch (err) {
-      console.warn('DB cold-start init warning:', err.message);
-    }
+  try {
+    await initDb();
+  } catch (err) {
+    console.error('DB cold-start init error:', err.message);
   }
   next();
 });
@@ -147,12 +143,31 @@ app.use('/api/deadlines/parse-raw', sensitiveLimiter);
 /**
  * Health check endpoint for uptime monitoring and cloud diagnostics
  */
-app.get(['/health', '/api/health'], (req, res) => {
+app.get(['/health', '/api/health'], async (req, res) => {
+  let dbStatus = 'ok';
+  let dbError = null;
+  let taskCount = 0;
+  try {
+    await initDb();
+    const row = await get('SELECT COUNT(*) as count FROM deadline_tasks');
+    taskCount = row ? row.count : 0;
+  } catch (err) {
+    dbStatus = 'error';
+    dbError = err.message;
+  }
+
   res.status(200).json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
-    service: 'Student Deadline Radar'
+    service: 'Student Deadline Radar',
+    db_status: dbStatus,
+    db_path: DB_PATH,
+    db_error: dbError,
+    task_count: taskCount,
+    has_gemini_key: Boolean(process.env.GEMINI_API_KEY),
+    node_env: process.env.NODE_ENV,
+    is_vercel: Boolean(process.env.VERCEL || process.env.NOW_REGION)
   });
 });
 
@@ -193,6 +208,7 @@ const VALID_URGENCIES = ['all', 'red', 'yellow', 'green', 'overdue'];
  */
 app.get('/api/deadlines', async (req, res) => {
   try {
+    await initDb();
     const rawStatus = (req.query.status || 'active').toLowerCase().trim();
     const rawCategory = (req.query.category || 'all').toLowerCase().trim();
     const rawUrgency = (req.query.urgency || 'all').toLowerCase().trim();
@@ -373,6 +389,7 @@ app.patch('/api/deadlines/:id/action', async (req, res) => {
  */
 app.get('/api/stats', async (req, res) => {
   try {
+    await initDb();
     const tasks = await all('SELECT * FROM deadline_tasks');
 
     const activeTasks = tasks.filter(t => t.status === 'active');

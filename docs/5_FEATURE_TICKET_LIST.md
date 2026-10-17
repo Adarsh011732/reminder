@@ -72,6 +72,15 @@
   - [x] Dense celestial starfield restored in `AnimatedBackground.jsx` using 150+ twinkling stars with 0% GPU load (no $O(N^2)$ checks or `shadowBlur`).
   - [x] Added Gemini API Key input field to `ConnectMailboxModal.jsx`.
 
+### 🎫 RADAR-107: Cloud & Serverless SQLite Read-Only Filesystem Auto-Resolution & Race-Free Promise Singleton
+- **Priority:** `P0 - Critical` | **Status:** `✅ Completed`
+- **Target:** [`backend/db.js`](file:///c:/Dev_Projects/Reminder!/backend/db.js), [`backend/server.js`](file:///c:/Dev_Projects/Reminder!/backend/server.js)
+- **Description:** Fix HTTP 500 on `/api/deadlines` and `/api/stats` in Vercel production by implementing dynamic filesystem write testing, auto-routing SQLite to `os.tmpdir()` (`/tmp/deadlines.db`) or `:memory:`, and eliminating concurrent request `BEGIN TRANSACTION` lockouts with an initialization Promise singleton.
+- **Acceptance Criteria:**
+  - [x] SQLite automatically detects read-only cloud filesystems (`__dirname`) and routes database to `os.tmpdir()` or memory.
+  - [x] `initDb` wrapped in single Promise to prevent concurrent cold-start race conditions.
+  - [x] Health check endpoint exposes runtime diagnostics (`db_status`, `db_path`, `task_count`, `has_gemini_key`).
+
 ---
 
 ## Epic 2: Core Task Management & Dashboard
