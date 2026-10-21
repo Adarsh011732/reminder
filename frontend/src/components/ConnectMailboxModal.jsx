@@ -27,7 +27,7 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
 
   const [geminiKey, setGeminiKey] = useState(() => {
     try {
-      return localStorage.getItem('student_radar_gemini_key') || '';
+      return sessionStorage.getItem('student_radar_gemini_key') || '';
     } catch {
       return '';
     }
@@ -37,9 +37,9 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
     setGeminiKey(val);
     try {
       if (val.trim()) {
-        localStorage.setItem('student_radar_gemini_key', val.trim());
+        sessionStorage.setItem('student_radar_gemini_key', val.trim());
       } else {
-        localStorage.removeItem('student_radar_gemini_key');
+        sessionStorage.removeItem('student_radar_gemini_key');
       }
     } catch {}
   };
@@ -97,7 +97,7 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
     setScanResult(null);
 
     try {
-      const storedKey = (localStorage.getItem('student_radar_gemini_key') || '').trim();
+      const storedKey = (sessionStorage.getItem('student_radar_gemini_key') || '').trim();
       const headers = { 'Content-Type': 'application/json' };
       if (storedKey) {
         headers['x-gemini-key'] = storedKey;
@@ -317,7 +317,7 @@ export default function ConnectMailboxModal({ isOpen, onClose, onSyncComplete })
                 className="w-full px-3 py-2 bg-[#121212] border border-[#262626] rounded-xl text-xs text-white placeholder-neutral-600 focus:outline-none focus:border-white font-mono"
               />
               <p className="text-[10px] text-neutral-500 mt-1">
-                Saved privately in your browser. All live mailbox scans and AI analyses will route to this key.
+                Saved privately for this browser session only. All live mailbox scans and AI analyses will route to this key.
               </p>
             </div>
 

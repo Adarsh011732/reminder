@@ -22,9 +22,11 @@ Both the **React Vite Frontend** and the **Node.js Express Backend** deploy toge
    - **Root Directory:** `./`
    - **Build Command:** `npm run build`
    - **Output Directory:** `frontend/dist`
-5. *(Optional)* Add Environment Variables under **Settings → Environment Variables**:
-   - `GEMINI_API_KEY`: *(Optional)* For advanced Google Gemini 1.5 Flash extraction.
+5. Add Environment Variables under **Settings → Environment Variables**:
+   - `SESSION_SECRET`: **REQUIRED** for stable server-side login sessions — generate with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+   - `GEMINI_API_KEY`: *(Optional)* For Google Gemini Flash extraction (heuristic engine works without it).
    - `TELEGRAM_BOT_TOKEN` & `TELEGRAM_CHAT_ID`: *(Optional)* For urgent mobile push notifications.
+   - `CORS_ORIGIN`: *(Optional)* Only set this for split-domain deployments (e.g. Render API + Vercel SPA). Leave unset for the standard single-domain Vercel setup — the backend is same-origin only by default.
 6. Click **Deploy**!
 
 ---
@@ -58,8 +60,16 @@ Open `http://localhost:5173` to view the dashboard!
 | Variable | Required? | Default | Description |
 | :--- | :---: | :---: | :--- |
 | `PORT` | No | `8000` | Port for local Node.js backend. |
-| `NODE_ENV` | No | `production` on Vercel | Production mode disables debug traces and enables HSTS. |
-| `GEMINI_API_KEY` | No | `""` | Google Gemini 1.5 Flash key for AI email deadline extraction. |
+| `NODE_ENV` | No | `production` on Vercel | Production mode enables HSTS + upgrade-insecure-requests and disables debug traces. |
+| `SESSION_SECRET` | **Yes (prod)** | ephemeral | HMAC key signing the HttpOnly session cookie (min 32 chars). Ephemeral fallback keeps dev working but does not survive restarts. |
+| `CORS_ORIGIN` | No | same-origin only | Comma-separated exact origins. Wildcard `*` is allowed but never combined with credentials. |
+| `GEMINI_API_KEY` | No | `""` | Google Gemini key for AI email deadline extraction. |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Primary Gemini model id (`gemini-1.5-flash` was retired by Google in 2025). |
+| `GEMINI_FALLBACK_MODEL` | No | `gemini-2.0-flash` | Retry target when the primary model is retired/missing. |
 | `TELEGRAM_BOT_TOKEN` | No | `""` | Telegram bot token for instant deadline alerts. |
 | `TELEGRAM_CHAT_ID` | No | `""` | Telegram user or group chat ID for notifications. |
-| `CORS_ORIGIN` | No | `*` | Allowed CORS origins. |
+
+### Security-related deployment notes
+- **Session auth:** all mutating endpoints (`PATCH /api/deadlines/:id/action`, `parse-raw` with `auto_save`, telegram dispatch, websocket-free mailbox scans) require an HttpOnly `radar_session` cookie plus the double-submit `x-radar-csrf` header — both minted only after a successful IMAP credential proof.
+- **SSRF:** IMAP targets accept public hostnames only (private/loopback/link-local/metadata ranges rejected; TLS `secure` port restricted to `993`).
+- **URLs:** every stored/rendered link passes the server-side and client-side URL sanitizers; `javascript:`/`data:` URLs can never reach an `href`.

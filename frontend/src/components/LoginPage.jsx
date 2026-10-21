@@ -73,13 +73,16 @@ export default function LoginPage({ onLoginSuccess, onGuestLogin }) {
           days: Number(daysToScan),
           connectedAt: new Date().toISOString()
         };
-        localStorage.setItem('student_radar_user', JSON.stringify(userData));
+        // Session-storage only: mailbox credentials never persist beyond this tab
+        sessionStorage.setItem('student_radar_user', JSON.stringify(userData));
+        // One-time migration: purge any legacy persistent copy holding the app password
+        try { localStorage.removeItem('student_radar_user'); } catch {}
         
         // Instant login transition
         onLoginSuccess(userData);
 
         // 2. Trigger mailbox scan asynchronously in background (academic filtered)
-        const storedKey = (localStorage.getItem('student_radar_gemini_key') || '').trim();
+        const storedKey = (sessionStorage.getItem('student_radar_gemini_key') || '').trim();
         const scanHeaders = { 'Content-Type': 'application/json' };
         if (storedKey) {
           scanHeaders['x-gemini-key'] = storedKey;
@@ -120,7 +123,8 @@ export default function LoginPage({ onLoginSuccess, onGuestLogin }) {
       isDemo: true,
       connectedAt: new Date().toISOString()
     };
-    localStorage.setItem('student_radar_user', JSON.stringify(demoUser));
+    sessionStorage.setItem('student_radar_user', JSON.stringify(demoUser));
+    try { localStorage.removeItem('student_radar_user'); } catch {}
     onGuestLogin(demoUser);
   };
 

@@ -29,15 +29,18 @@ import LoginPage from './components/LoginPage';
 import { requestNotificationPermission, triggerTestNotification } from './utils/notificationService';
 import { Sparkles, Mail, ShieldCheck, Inbox, RefreshCw, CheckCircle2, AlertTriangle, GraduationCap, Briefcase, Code2, Calendar, Archive, RotateCcw, Check, Bell, X } from 'lucide-react';
 import { apiFetch } from './utils/apiClient';
+import { safeExternalUrl } from './utils/safeUrl';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
+    // Session storage only: mailbox credentials never live in persistent storage
     try {
-      const saved = localStorage.getItem('student_radar_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
+      const saved = sessionStorage.getItem('student_radar_user');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    // One-time migration: remove any legacy persistent copy containing the app password
+    try { localStorage.removeItem('student_radar_user'); } catch {}
+    return null;
   });
 
   const [activeTasks, setActiveTasks] = useState([]);
@@ -189,7 +192,7 @@ export default function App() {
 
     try {
       if (currentUser && currentUser.app_password) {
-        const storedKey = (localStorage.getItem('student_radar_gemini_key') || '').trim();
+        const storedKey = (sessionStorage.getItem('student_radar_gemini_key') || '').trim();
         const headers = { 'Content-Type': 'application/json' };
         if (storedKey) {
           headers['x-gemini-key'] = storedKey;
@@ -277,7 +280,10 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('student_radar_user');
+    try {
+      sessionStorage.removeItem('student_radar_user');
+      localStorage.removeItem('student_radar_user'); // legacy persistent copy cleanup
+    } catch {}
     setCurrentUser(null);
   };
 
@@ -446,7 +452,7 @@ export default function App() {
             </p>
             {inAppAlert.task?.primary_link && (
               <a
-                href={inAppAlert.task.primary_link}
+                href={safeExternalUrl(inAppAlert.task.primary_link) || undefined}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-400 hover:text-sky-300 mt-2 underline"

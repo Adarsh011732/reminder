@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Sparkles, Send, CheckCircle2, ArrowRight, RefreshCw, FileCode, Check, AlertCircle, Code, Key, ChevronDown, ChevronUp } from 'lucide-react';
 import { apiFetch } from '../utils/apiClient';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 export default function EmailParserModal({ isOpen, onClose, onTaskCreated, sampleEmails }) {
   const [selectedTemplate, setSelectedTemplate] = useState('');
@@ -12,10 +13,10 @@ export default function EmailParserModal({ isOpen, onClose, onTaskCreated, sampl
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
 
-  // Gemini API Key config
+  // Gemini API Key config (session-scoped, never persisted to disk)
   const [geminiKey, setGeminiKey] = useState(() => {
     try {
-      return localStorage.getItem('student_radar_gemini_key') || '';
+      return sessionStorage.getItem('student_radar_gemini_key') || '';
     } catch {
       return '';
     }
@@ -26,9 +27,9 @@ export default function EmailParserModal({ isOpen, onClose, onTaskCreated, sampl
     setGeminiKey(val);
     try {
       if (val.trim()) {
-        localStorage.setItem('student_radar_gemini_key', val.trim());
+        sessionStorage.setItem('student_radar_gemini_key', val.trim());
       } else {
-        localStorage.removeItem('student_radar_gemini_key');
+        sessionStorage.removeItem('student_radar_gemini_key');
       }
     } catch {}
   };
@@ -51,6 +52,8 @@ export default function EmailParserModal({ isOpen, onClose, onTaskCreated, sampl
   }, [sampleEmails]);
 
   if (!isOpen) return null;
+
+  const extractionHref = extractedResult ? safeExternalUrl(extractedResult.primary_link) : null;
 
   const handleParse = async (autoSave = false) => {
     if (!subject || !body) return;
@@ -77,7 +80,13 @@ export default function EmailParserModal({ isOpen, onClose, onTaskCreated, sampl
       });
 
       if (!response.ok) {
-        throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+        let detail = `Server returned ${response.status}: ${response.statusText}`;
+        try {
+          const errJson = await response.json();
+          const detailVal = errJson && errJson.detail;
+          if (detailVal) detail = typeof detailVal === 'string' ? detailVal : (detailVal.message || detail);
+        } catch {}
+        throw new Error(detail);
       }
 
       const data = await response.json();
@@ -307,11 +316,11 @@ export default function EmailParserModal({ isOpen, onClose, onTaskCreated, sampl
               </div>
 
               {/* Action Link */}
-              {extractedResult.primary_link && (
+              {extractionHref && (
                 <div className="p-2.5 bg-[#121216] rounded-xl border border-[#1f1f26] text-xs flex items-center justify-between">
                   <span className="text-neutral-400 font-medium">Extracted Action Link:</span>
                   <a
-                    href={extractedResult.primary_link}
+                    href={extractionHref}
                     target="_blank"
                     rel="noreferrer"
                     className="text-white underline font-mono truncate max-w-sm"

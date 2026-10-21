@@ -2,7 +2,10 @@
  * Browser Push Notification Service for Student Deadline Radar
  * Handles permission requests, native desktop notifications, Service Worker fallback,
  * and in-app visual alert event broadcasting.
+ * All untrusted URLs are sanitized before use in window.open, notification data, or ICS files.
  */
+
+import { safeExternalUrl, safeIcsText } from './safeUrl';
 
 // Play subtle, elegant 2-tone notification chime via Web Audio API
 export function playNotificationChime() {
@@ -147,8 +150,9 @@ export async function dispatchPushNotification({ title, body, icon = '/favicon.s
 
       notif.onclick = function () {
         window.focus();
-        if (data?.url) {
-          window.open(data.url, '_blank');
+        const openTarget = safeExternalUrl(data?.url);
+        if (openTarget) {
+          window.open(openTarget, '_blank', 'noopener,noreferrer');
         }
         notif.close();
       };
@@ -172,7 +176,7 @@ export function triggerTestNotification(task) {
     title,
     body,
     tag: 'radar_alert',
-    data: { url: task?.primary_link || window.location.href },
+    data: { url: safeExternalUrl(task?.primary_link) || window.location.origin },
     task
   });
 }
@@ -198,6 +202,7 @@ export function generateIcsCalendar(tasks) {
   ];
 
   validTasks.forEach((task) => {
+    const safeHref = safeExternalUrl(task.primary_link);
     const deadline = new Date(task.deadline_iso);
     const startDate = new Date(deadline.getTime() - 60 * 60 * 1000);
     const endDate = deadline;
@@ -209,9 +214,9 @@ export function generateIcsCalendar(tasks) {
       `DTSTAMP:${formatDateToICS(now)}`,
       `DTSTART:${formatDateToICS(startDate)}`,
       `DTEND:${formatDateToICS(endDate)}`,
-      `SUMMARY:[Deadline] ${task.title.replace(/\n/g, ' ')}`,
-      `DESCRIPTION:${(task.action_required || '').replace(/\n/g, ' ')}\\nSender: ${(task.sender || 'College').replace(/\n/g, ' ')}\\nLink: ${(task.primary_link || 'ERP Portal').replace(/\n/g, ' ')}`,
-      task.primary_link ? `URL:${task.primary_link}` : `LOCATION:${task.sender || 'Campus'}`,
+      `SUMMARY:[Deadline] ${safeIcsText(task.title)}`,
+      `DESCRIPTION:${safeIcsText(task.action_required || '')}\\nSender: ${safeIcsText(task.sender || 'College')}\\nLink: ${safeIcsText(task.primary_link || 'ERP Portal')}`,
+      safeHref ? `URL:${safeHref}` : `LOCATION:${safeIcsText(task.sender || 'Campus')}`,
       'STATUS:CONFIRMED',
       'BEGIN:VALARM',
       'TRIGGER:-PT24H',

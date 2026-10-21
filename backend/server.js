@@ -23,8 +23,23 @@ const { db, DB_PATH, run, get, all, initDb, closeDb } = require('./db');
 const { computeUrgencyTier, extractDeadlineFromEmail } = require('./services/aiExtractor');
 const { testImapConnection, fetchAndProcessRealEmails } = require('./services/imapService');
 const { SAMPLE_STUDENT_EMAILS } = require('./services/mockData');
+const {
+  sanitizeExternalUrl,
+  validatePublicMailHost,
+  sanitizeExtracted,
+  createSessionToken,
+  verifySessionToken,
+  generateCsrfToken,
+  parseCookies,
+  buildCookieString,
+  verifyCsrfDoubleSubmit,
+  SESSION_COOKIE_NAME,
+  CSRF_COOKIE_NAME,
+  DEFAULT_SESSION_TTL_MS
+} = require('./security');
 
 const app = express();
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT || 8000;
 const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist');
 const HAS_FRONTEND = fs.existsSync(FRONTEND_DIST);
@@ -42,9 +57,30 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+
+  // Content-Security-Policy: the SPA bundle is self-hosted; Google Fonts are the
+  // only third-party style/font origin. No external scripts allowed, ever.
+  const cspDirectives = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob:",
+    "media-src 'self'",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'"
+  ];
+  if (IS_PRODUCTION) cspDirectives.push('upgrade-insecure-requests');
+  res.setHeader('Content-Security-Policy', cspDirectives.join('; '));
+
   // Force HTTPS / HSTS in production environments
-  if (process.env.NODE_ENV === 'production') {
+  if (IS_PRODUCTION) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   }
   next();
@@ -108,15 +144,51 @@ const sensitiveLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20, messa
 // ----------------------------------------------------------------------------
 // 3. CORS & REQUEST PARSING CONFIGURATION
 // ----------------------------------------------------------------------------
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
-  : '*';
+const CORS_METHODS = ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'];
+const CORS_ALLOWED_HEADERS = ['Content-Type', 'x-radar-csrf', 'x-gemini-key'];
 
-app.use(cors({
-  origin: allowedOrigins.length === 1 && allowedOrigins[0] === '*' ? '*' : allowedOrigins,
-  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-gemini-key']
-}));
+/**
+ * Strict CORS: wildcard origins are NEVER combined with credentialed requests.
+ * - explicit list   -> exact-match allowlist with credentials
+ * - explicit "*"    -> public wildcard (credentials disabled)
+ * - unset, prod     -> same-origin only (Vercel rewrites make SPA + API same-origin)
+ * - unset, dev      -> localhost origins only (Vite also proxies /api same-origin)
+ */
+function buildCorsConfig() {
+  const configured = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
+
+  if (configured.length) {
+    if (configured.length === 1 && configured[0] === '*') {
+      console.warn('[SEC] CORS_ORIGIN="*" requested explicitly: wildcard CORS with credentials disabled.');
+      return { origin: '*', credentials: false, methods: CORS_METHODS, allowedHeaders: CORS_ALLOWED_HEADERS };
+    }
+    return {
+      origin(origin, cb) {
+        if (!origin || configured.includes(origin)) return cb(null, { origin: true, credentials: true });
+        return cb(null, false);
+      },
+      credentials: true,
+      methods: CORS_METHODS,
+      allowedHeaders: CORS_ALLOWED_HEADERS
+    };
+  }
+
+  if (IS_PRODUCTION) {
+    console.warn('[SEC] CORS_ORIGIN unset in production: cross-origin access disabled (same-origin only).');
+    return { origin: false, credentials: true, methods: CORS_METHODS, allowedHeaders: CORS_ALLOWED_HEADERS };
+  }
+
+  return {
+    origin(origin, cb) {
+      return cb(null, !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin));
+    },
+    credentials: true,
+    methods: CORS_METHODS,
+    allowedHeaders: CORS_ALLOWED_HEADERS
+  };
+}
+
+app.use(cors(buildCorsConfig()));
 
 // Restrict request body buffer to 500kb to mitigate memory-exhaustion DoS attacks
 app.use(express.json({ limit: '500kb' }));
@@ -136,6 +208,51 @@ app.use('/api/', generalLimiter);
 app.use('/api/mailbox/', sensitiveLimiter);
 app.use('/api/telegram/', sensitiveLimiter);
 app.use('/api/deadlines/parse-raw', sensitiveLimiter);
+
+// ----------------------------------------------------------------------------
+// 3.1 SERVER-SIDE SESSION AUTH (HMAC-signed stateless) + CSRF DOUBLE-SUBMIT
+// ----------------------------------------------------------------------------
+app.use((req, res, next) => {
+  const cookies = parseCookies(req.headers.cookie || '');
+  req.radarCookies = cookies;
+  const sessionData = verifySessionToken(cookies[SESSION_COOKIE_NAME]);
+  req.radarSession = sessionData ? { email: sessionData.e, expiresAt: sessionData.exp } : null;
+  next();
+});
+
+/**
+ * Issues HttpOnly session + double-submit CSRF pair (10h window, refreshed on
+ * every successful mailbox proof).
+ */
+function issueSessionCookies(res, email) {
+  const token = createSessionToken(email, DEFAULT_SESSION_TTL_MS);
+  const csrf = generateCsrfToken();
+  const maxAgeSec = Math.floor(DEFAULT_SESSION_TTL_MS / 1000);
+  res.setHeader('Set-Cookie', [
+    buildCookieString(SESSION_COOKIE_NAME, token, { maxAgeSec, httpOnly: true, secure: IS_PRODUCTION }),
+    buildCookieString(CSRF_COOKIE_NAME, csrf, { maxAgeSec, httpOnly: false, secure: IS_PRODUCTION })
+  ]);
+}
+
+/**
+ * Gate for every state-changing / mutating request: requires a valid server-side
+ * session AND a matching CSRF header. Returns false when the request must stop.
+ */
+function authorizeMutation(req, res) {
+  if (!req.radarSession) {
+    res.status(401).json({
+      detail: 'Server-side session required. Connect your mailbox (or log in) first, then retry.'
+    });
+    return false;
+  }
+  if (!verifyCsrfDoubleSubmit({ cookies: req.radarCookies, headerToken: req.headers['x-radar-csrf'] })) {
+    res.status(403).json({
+      detail: 'CSRF validation failed. Refresh the page (or reconnect your mailbox) and try again.'
+    });
+    return false;
+  }
+  return true;
+}
 
 // ----------------------------------------------------------------------------
 // 4. HEALTH CHECK & STATUS ROUTES
@@ -167,7 +284,7 @@ app.get(['/health', '/api/health'], async (req, res) => {
 
 // Serve frontend static build assets if available
 if (HAS_FRONTEND) {
-  app.use(express.static(FRONTEND_DIST));
+  app.use(express.static(FRONTEND_DIST, { dotfiles: 'ignore', index: 'index.html' }));
 }
 
 /**
@@ -235,6 +352,9 @@ app.get('/api/deadlines', async (req, res) => {
 
     const tasks = await all(sql, params);
 
+    // Defense-in-depth: never emit unvalidated hrefs (covers legacy DB rows too)
+    tasks.forEach(task => { task.primary_link = sanitizeExternalUrl(task.primary_link); });
+
     // Dynamically update real-time urgency tiers based on current timestamp
     for (const task of tasks) {
       if (task.deadline_iso && task.status === 'active') {
@@ -267,15 +387,26 @@ app.get('/api/deadlines', async (req, res) => {
  * Parses a single raw email notice string using the Gemini AI + Heuristic Regex pipeline.
  * Accepts optional Gemini API key via header 'x-gemini-key' or request body 'gemini_api_key'.
  * Optional query parameter: auto_save=true to persist directly into database.
+ * Persisting (auto_save) requires an authenticated server-side session + CSRF token; previews stay open.
  */
 app.post('/api/deadlines/parse-raw', async (req, res) => {
   try {
-    const { subject = '', sender = '', body = '', sent_at = null, gemini_api_key = null } = req.body || {};
-    const autoSave = req.query.auto_save === 'true' || req.body.auto_save === true;
-    const userApiKey = req.headers['x-gemini-key'] || gemini_api_key;
+    const payloadBody = req.body || {};
+    const subject = typeof payloadBody.subject === 'string' ? payloadBody.subject.slice(0, 300).trim() : '';
+    const sender = typeof payloadBody.sender === 'string' ? payloadBody.sender.slice(0, 300).trim() : '';
+    const rawNotice = typeof payloadBody.body === 'string' ? payloadBody.body.slice(0, 20000) : '';
+    const sentAtRaw = typeof payloadBody.sent_at === 'string' ? payloadBody.sent_at.slice(0, 64) : null;
+    const headerKey = typeof req.headers['x-gemini-key'] === 'string' ? req.headers['x-gemini-key'].slice(0, 120).trim() : '';
+    const bodyKey = typeof payloadBody.gemini_api_key === 'string' ? payloadBody.gemini_api_key.slice(0, 120).trim() : '';
+    const userApiKey = headerKey || bodyKey || null;
+    const autoSave = req.query.auto_save === 'true' || payloadBody.auto_save === true;
+
+    // Mutations require a server-side session + CSRF proof
+    if (autoSave && !authorizeMutation(req, res)) return;
 
     // Execute through dual-tier extraction engine (Gemini Flash with automatic Heuristic fallback)
-    const extracted = await extractDeadlineFromEmail(subject, sender, body, sent_at, userApiKey);
+    const extractedRaw = await extractDeadlineFromEmail(subject, sender, rawNotice, sentAtRaw, userApiKey);
+    const extracted = sanitizeExtracted(extractedRaw, { fallbackSubject: subject });
 
     let savedTask = null;
     if (autoSave && extracted && extracted.is_actionable) {
@@ -285,7 +416,7 @@ app.post('/api/deadlines/parse-raw', async (req, res) => {
       // Generate unique thread ID hash for deduplication
       const deterministicThreadId = crypto
         .createHash('sha256')
-        .update(`${subject}:${sender}:${sent_at || Date.now()}`)
+        .update(`${subject}:${sender}:${sentAtRaw || Date.now()}`)
         .digest('hex')
         .substring(0, 32);
 
@@ -296,24 +427,25 @@ app.post('/api/deadlines/parse-raw', async (req, res) => {
           urgency_tier, status, priority_score, confidence, email_thread_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        extracted.title || subject,
+        extracted.title || subject || 'Campus Action Notice',
         extracted.category || 'other',
         extracted.action_required || 'Check email details',
         deadlineVal,
         extracted.deadline_text_raw || null,
         extracted.deadline_exact !== false ? 1 : 0,
         extracted.primary_link || null,
-        sender,
-        subject,
-        body.substring(0, 200),
+        sender.slice(0, 254),
+        subject.slice(0, 254),
+        rawNotice.slice(0, 200),
         urgency,
         'active',
-        extracted.priority_score || 3,
-        extracted.confidence || 0.95,
+        extracted.priority_score,
+        extracted.confidence,
         deterministicThreadId
       ]);
 
       savedTask = await get('SELECT * FROM deadline_tasks WHERE id = ?', [insertResult.lastID]);
+      if (savedTask) savedTask.primary_link = sanitizeExternalUrl(savedTask.primary_link);
     }
 
     res.json({
@@ -335,6 +467,8 @@ const ALLOWED_TASK_ACTIONS = ['done', 'snooze_24h', 'reactivate', 'delete'];
 
 app.patch('/api/deadlines/:id/action', async (req, res) => {
   try {
+    if (!authorizeMutation(req, res)) return;
+
     const taskId = parseInt(req.params.id, 10);
     if (!Number.isInteger(taskId) || taskId <= 0) {
       return res.status(400).json({ detail: 'Invalid task ID. Must be a positive integer.' });
@@ -366,10 +500,12 @@ app.patch('/api/deadlines/:id/action', async (req, res) => {
       ]);
     } else if (action === 'delete') {
       await run('DELETE FROM deadline_tasks WHERE id = ?', [taskId]);
+      task.primary_link = sanitizeExternalUrl(task.primary_link);
       return res.json(task);
     }
 
     const updatedTask = await get('SELECT * FROM deadline_tasks WHERE id = ?', [taskId]);
+    if (updatedTask) updatedTask.primary_link = sanitizeExternalUrl(updatedTask.primary_link);
     res.json(updatedTask);
   } catch (err) {
     console.error('Error updating task action:', err.message);
@@ -430,6 +566,8 @@ app.get('/api/sample-emails', (req, res) => {
  */
 app.post('/api/telegram/test-alert', async (req, res) => {
   try {
+    if (!authorizeMutation(req, res)) return;
+
     const { task_id, bot_token, chat_id } = req.body || {};
     const taskId = parseInt(task_id, 10);
     if (!Number.isInteger(taskId) || taskId <= 0) {
@@ -465,8 +603,8 @@ app.post('/api/telegram/test-alert', async (req, res) => {
 _Tri-Color Urgency: ${(task.urgency_tier || 'green').toUpperCase()}_`;
 
     let telegramApiResult = null;
-    const activeToken = bot_token || process.env.TELEGRAM_BOT_TOKEN;
-    const activeChatId = chat_id || process.env.TELEGRAM_CHAT_ID;
+    const activeToken = String(bot_token || process.env.TELEGRAM_BOT_TOKEN || '').slice(0, 80).trim();
+    const activeChatId = String(chat_id || process.env.TELEGRAM_CHAT_ID || '').slice(0, 64).trim();
 
     if (activeToken && activeChatId) {
       try {
@@ -477,9 +615,10 @@ _Tri-Color Urgency: ${(task.urgency_tier || 'green').toUpperCase()}_`;
           parse_mode: 'Markdown'
         };
 
-        if (task.primary_link) {
+        const safePrimaryLink = sanitizeExternalUrl(task.primary_link);
+        if (safePrimaryLink) {
           payload.reply_markup = {
-            inline_keyboard: [[{ text: '🔗 Open Form / Portal', url: task.primary_link }]]
+            inline_keyboard: [[{ text: '🔗 Open Form / Portal', url: safePrimaryLink }]]
           };
         }
 
@@ -532,8 +671,15 @@ app.post('/api/mailbox/test-connection', async (req, res) => {
     }
 
     const numPort = parseInt(port, 10);
-    if (!Number.isInteger(numPort) || numPort < 1 || numPort > 65535) {
-      return res.status(400).json({ detail: { success: false, message: 'Invalid port. Must be between 1 and 65535.' } });
+    if (!Number.isInteger(numPort) || numPort !== 993) {
+      return res.status(400).json({ detail: { success: false, message: 'Only the secure IMAPS port 993 is supported.' } });
+    }
+
+    // SSRF guard: reject hostnames that resolve to private / loopback /
+    // link-local (cloud metadata) networks before any socket is opened
+    const hostCheck = await validatePublicMailHost(trimmedServer);
+    if (!hostCheck.ok) {
+      return res.status(400).json({ detail: { success: false, message: hostCheck.reason } });
     }
 
     const result = await testImapConnection({
@@ -546,6 +692,9 @@ app.post('/api/mailbox/test-connection', async (req, res) => {
     if (!result.success) {
       return res.status(400).json({ detail: result });
     }
+
+    // A proven IMAP login mints the server-side session (HttpOnly cookie + CSRF pair)
+    issueSessionCookies(res, trimmedEmail);
     res.json(result);
   } catch (err) {
     res.status(400).json({ detail: { success: false, message: 'Failed to establish IMAP connection.' } });
@@ -577,8 +726,8 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
     }
 
     const trimmedPass = String(app_password).trim();
-    if (!trimmedPass) {
-      return res.status(400).json({ detail: { success: false, message: 'App password is required.' } });
+    if (!trimmedPass || trimmedPass.length > 128) {
+      return res.status(400).json({ detail: { success: false, message: 'App password is required (max 128 characters).' } });
     }
 
     const trimmedServer = String(imap_server).trim().toLowerCase();
@@ -587,8 +736,14 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
     }
 
     const numPort = parseInt(port, 10);
-    if (!Number.isInteger(numPort) || numPort < 1 || numPort > 65535) {
-      return res.status(400).json({ detail: { success: false, message: 'Invalid port number.' } });
+    if (!Number.isInteger(numPort) || numPort !== 993) {
+      return res.status(400).json({ detail: { success: false, message: 'Only the secure IMAPS port 993 is supported.' } });
+    }
+
+    // SSRF guard: no internal / metadata / loopback targets, before any socket opens
+    const hostCheck = await validatePublicMailHost(trimmedServer);
+    if (!hostCheck.ok) {
+      return res.status(400).json({ detail: { success: false, message: hostCheck.reason } });
     }
 
     // Clamp limits to protect server memory and stay safely within Vercel's serverless timeout
@@ -610,6 +765,9 @@ app.post('/api/mailbox/fetch-real-emails', async (req, res) => {
     if (!result.success) {
       return res.status(400).json({ detail: result });
     }
+
+    // Successful authenticated scan also refreshes the server-side session
+    issueSessionCookies(res, trimmedEmail);
     res.json(result);
   } catch (err) {
     res.status(400).json({ detail: { success: false, message: 'Mailbox scan failed.' } });

@@ -3,8 +3,9 @@ import { X, Send, Copy, Check, Smartphone, Key, User, CheckCircle2, AlertTriangl
 import { apiFetch } from '../utils/apiClient';
 
 export default function TelegramModal({ isOpen, onClose, lastDispatchedAlert, sampleTaskId }) {
-  const [botToken, setBotToken] = useState(() => localStorage.getItem('tg_bot_token') || '');
-  const [chatId, setChatId] = useState(() => localStorage.getItem('tg_chat_id') || '');
+  // Bot credentials live in session storage only (cleared when the tab closes)
+  const [botToken, setBotToken] = useState(() => sessionStorage.getItem('tg_bot_token') || '');
+  const [chatId, setChatId] = useState(() => sessionStorage.getItem('tg_chat_id') || '');
   const [isSending, setIsSending] = useState(false);
   const [dispatchStatus, setDispatchStatus] = useState(null);
 
@@ -14,8 +15,9 @@ export default function TelegramModal({ isOpen, onClose, lastDispatchedAlert, sa
     setIsSending(true);
     setDispatchStatus(null);
 
-    if (botToken) localStorage.setItem('tg_bot_token', botToken.trim());
-    if (chatId) localStorage.setItem('tg_chat_id', chatId.trim());
+    if (botToken) sessionStorage.setItem('tg_bot_token', botToken.trim());
+    if (chatId) sessionStorage.setItem('tg_chat_id', chatId.trim());
+    try { localStorage.removeItem('tg_bot_token'); localStorage.removeItem('tg_chat_id'); } catch {}
 
     try {
       const res = await apiFetch('/api/telegram/test-alert', {

@@ -351,7 +351,31 @@ function ruleBasedExtractor(subject, sender, body, sentAt = null) {
   };
 }
 
-// Full AI extraction engine with Gemini Flash + rule-based fallback
+// gemini-1.5-flash was fully retired by Google (April 29, 2025); calls to it
+// silently degradated the app to heuristics. Current-generation model with
+// env override so future model churn never needs a code change.
+const GEMINI_MODEL = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+const GEMINI_FALLBACK_MODEL = (process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.0-flash').trim();
+
+function isModelUnavailableError(err) {
+  const status = err && err.response ? err.response.status : null;
+  const apiMessage = (err && err.response && err.response.data && err.response.data.error && err.response.data.error.message) || '';
+  return status === 404 || /not found|not supported|deprecated|retired/i.test(apiMessage);
+}
+
+function callGeminiModel(model, apiKey, prompt) {
+  return axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        response_mime_type: "application/json"
+      }
+    },
+    { timeout: 4500 }
+  );
+}
+
 async function extractDeadlineFromEmail(subject, sender, body, sentAt = null, userProvidedKey = null) {
   // Check if non-actionable before calling LLM
   if (isNonActionableEmail(subject, sender, body)) {
@@ -425,16 +449,20 @@ Return ONLY a valid JSON object matching:
 }
 `;
 
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      },
-      { timeout: 4500 }
-    );
+    let response = null;
+    let lastModelError = null;
+    for (const model of [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]) {
+      try {
+        response = await callGeminiModel(model, apiKey, prompt);
+        break;
+      } catch (modelErr) {
+        // Model retirement churn: transparently retry with the fallback model.
+        // All other API failures (quota/auth/network) go straight to heuristics.
+        lastModelError = modelErr;
+        if (!isModelUnavailableError(modelErr)) break;
+      }
+    }
+    if (!response) throw lastModelError || new Error('Gemini call failed');
 
     const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (text) {
@@ -442,7 +470,7 @@ Return ONLY a valid JSON object matching:
       if (!parsed.primary_link && links.length > 0) {
         parsed.primary_link = links[0];
       }
-      parsed.engine = 'Google Gemini 1.5 Flash AI';
+      parsed.engine = 'Google Gemini Flash AI';
       parsed.is_ai = true;
       return parsed;
     }

@@ -1,5 +1,6 @@
 import React from 'react';
 import { ShieldAlert, ExternalLink, Check, Clock, AlertTriangle } from 'lucide-react';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 export default function MandatoryDirectivesSection({ mandatoryTasks = [], onAction }) {
   if (!mandatoryTasks || mandatoryTasks.length === 0) return null;
@@ -62,9 +63,9 @@ export default function MandatoryDirectivesSection({ mandatoryTasks = [], onActi
             </div>
 
             <div className="pt-3 border-t border-[#1a1a1a] flex items-center justify-between gap-2 mt-auto">
-              {task.primary_link ? (
+              {safeExternalUrl(task.primary_link) ? (
                 <a
-                  href={task.primary_link}
+                  href={safeExternalUrl(task.primary_link)}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-white text-black hover:bg-neutral-200 transition-all cursor-pointer shadow-sm"

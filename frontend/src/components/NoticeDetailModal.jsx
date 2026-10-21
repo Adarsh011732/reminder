@@ -1,9 +1,12 @@
 import React from 'react';
 import { X, ExternalLink, Calendar, Building, Clock, Check, Download, FileText, ShieldAlert } from 'lucide-react';
 import { getGoogleCalendarUrl, downloadIcsFile } from '../utils/notificationService';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 export default function NoticeDetailModal({ task, isOpen, onClose, onAction, onOpenCalendarHub }) {
   if (!isOpen || !task) return null;
+
+  const safePrimaryHref = safeExternalUrl(task.primary_link);
 
   const isMandatory = task.category === 'feedback' || task.title.toLowerCase().includes('feedback') || task.title.toLowerCase().includes('iqac') || task.title.toLowerCase().includes('hall ticket');
 
@@ -76,14 +79,14 @@ export default function NoticeDetailModal({ task, isOpen, onClose, onAction, onO
           </div>
 
           {/* Form / Direct Link */}
-          {task.primary_link && (
+          {safePrimaryHref && (
             <div className="p-4 rounded-xl bg-[#141414] border border-[#282828] flex items-center justify-between gap-3">
               <div className="truncate">
                 <div className="text-[10px] uppercase font-bold text-neutral-400 mb-0.5">Form / Submission URL:</div>
-                <div className="text-xs text-white font-mono truncate">{task.primary_link}</div>
+                <div className="text-xs text-white font-mono truncate">{safePrimaryHref}</div>
               </div>
               <a
-                href={task.primary_link}
+                href={safePrimaryHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-white text-black hover:bg-neutral-200 transition-all shrink-0 shadow-sm"

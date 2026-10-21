@@ -1,8 +1,11 @@
 import React from 'react';
 import { ExternalLink, Check, Clock, FileText, Calendar, Building, ChevronRight } from 'lucide-react';
+import { safeExternalUrl } from '../utils/safeUrl';
 
 export default function CompactListView({ tasks = [], onAction, onOpenDetails }) {
   if (tasks.length === 0) return null;
+
+  const hrefFor = (task) => (task && task.primary_link ? safeExternalUrl(task.primary_link) : null);
 
   return (
     <div className="rounded-2xl border border-[#222222] bg-[#0a0a0c]/80 backdrop-blur-xl overflow-hidden shadow-2xl divide-y divide-[#1a1a1a] mb-12 animate-fade-in">
@@ -61,9 +64,9 @@ export default function CompactListView({ tasks = [], onAction, onOpenDetails })
                 </div>
               )}
 
-              {task.primary_link && (
+              {hrefFor(task) && (
                 <a
-                  href={task.primary_link}
+                  href={hrefFor(task)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}

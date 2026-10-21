@@ -1,6 +1,7 @@
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const { extractDeadlineFromEmail, computeUrgencyTier } = require('./aiExtractor');
+const { sanitizeExtracted } = require('../security');
 const { run, get } = require('../db');
 
 /**
@@ -40,9 +41,12 @@ async function testImapConnection({ email, appPassword, server = 'imap.gmail.com
     }
   } catch (err) {
     try { await client.logout(); } catch (_) {}
+    console.warn('[IMAP test connection failed]', err.message);
+    // Scrub socket/provider internals from the client response (info-disclosure defense);
+    // full error stays in server logs only.
     return {
       success: false,
-      message: `Connection failed: ${err.message}`,
+      message: 'Could not connect to the IMAP server. Verify the server address, your email, and app password.',
       hint: 'For Gmail / Google Workspace, please generate an App Password (not your normal password) with 2-Step Verification enabled.'
     };
   }
@@ -170,14 +174,16 @@ async function fetchAndProcessRealEmails({
           const bodyText = parsed.text || (parsed.html ? parsed.html.replace(/<[^>]*>?/gm, ' ') : '');
           if (!bodyText.trim()) return null;
 
-          // Run AI / heuristic extractor with optional student or server Gemini API key
-          const extracted = await extractDeadlineFromEmail(
+          // Run AI / heuristic extractor with optional student or server Gemini API key,
+          // then enforce the strict output schema before anything touches the database
+          const rawExtraction = await extractDeadlineFromEmail(
             subject,
             sender,
             bodyText.substring(0, 4000),
             dateHeader,
             geminiApiKey
           );
+          const extracted = sanitizeExtracted(rawExtraction, { fallbackSubject: subject });
 
           const isActionable = Boolean(extracted && extracted.is_actionable);
           let createdTaskId = null;
@@ -200,14 +206,14 @@ async function fetchAndProcessRealEmails({
               extracted.deadline_text_raw || null,
               extracted.deadline_exact !== false ? 1 : 0,
               extracted.primary_link || null,
-              sender,
-              subject,
-              bodyText.substring(0, 300),
+              String(sender).slice(0, 254),
+              String(subject).slice(0, 254),
+              bodyText.substring(0, 200),
               urgency,
               'active',
-              extracted.priority_score || 3,
-              extracted.confidence || 0.95,
-              messageId
+              extracted.priority_score,
+              extracted.confidence,
+              String(messageId).slice(0, 100)
             ]);
 
             createdTaskId = insertResult.lastID;
@@ -219,12 +225,12 @@ async function fetchAndProcessRealEmails({
               message_id, sender, subject, is_actionable, extracted_task_id, raw_body
             ) VALUES (?, ?, ?, ?, ?, ?)
           `, [
-            messageId,
-            sender,
-            subject,
+            String(messageId).slice(0, 100),
+            String(sender).slice(0, 254),
+            String(subject).slice(0, 254),
             isActionable ? 1 : 0,
             createdTaskId,
-            bodyText.substring(0, 500)
+            bodyText.substring(0, 200)
           ]);
 
           return {
@@ -264,9 +270,11 @@ async function fetchAndProcessRealEmails({
     };
   } catch (err) {
     try { await client.logout(); } catch (_) {}
+    console.warn('[IMAP mailbox scan failed]', err.message);
+    // Scrub socket/provider internals from the client response
     return {
       success: false,
-      message: `Mailbox scan error: ${err.message}`
+      message: 'Mailbox scan failed. Verify the IMAP server address, your email, and app password.'
     };
   }
 }

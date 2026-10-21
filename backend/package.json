@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test:security": "node tests/security.test.js",
     "py-server": "python -m uvicorn main:app --reload --port 8000"
   },
   "dependencies": {

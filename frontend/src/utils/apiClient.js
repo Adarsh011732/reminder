@@ -1,7 +1,9 @@
 /**
  * API Client helper for Student Deadline Radar
- * Automatically prepends VITE_API_URL if configured for separate frontend/backend deployments (e.g. Vercel + Render),
- * or falls back to relative paths for single-service deployments (Express serving Vite bundle).
+ * - Prepends VITE_API_URL for separate frontend/backend deployments (e.g. Vercel + Render),
+ *   or uses relative paths for single-service deployments (Express serving the Vite bundle).
+ * - Attaches the double-submit CSRF header on mutating requests.
+ * - Sends credentials when the API base is a different origin (cookie sessions).
  */
 
 const RAW_API_BASE = import.meta.env.VITE_API_URL || '';
@@ -14,8 +16,36 @@ export function apiUrl(endpoint) {
   return `${API_BASE}${path}`;
 }
 
-export function apiFetch(endpoint, options) {
-  return fetch(apiUrl(endpoint), options);
+function readCsrfCookie() {
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)radar_csrf=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function apiFetch(endpoint, options = {}) {
+  const url = apiUrl(endpoint);
+  const opts = { ...options, headers: new Headers(options.headers || undefined) };
+
+  // Different-origin API deployments must carry the session cookie explicitly
+  if (/^https?:\/\//i.test(url)) {
+    let crossOrigin = true;
+    try { crossOrigin = new URL(url, window.location.href).origin !== window.location.origin; } catch {}
+    if (crossOrigin) opts.credentials = opts.credentials || 'include';
+  }
+
+  // Double-submit CSRF token for state-changing calls (paired with HttpOnly session cookie)
+  const method = (opts.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    const csrfToken = readCsrfCookie();
+    if (csrfToken && !opts.headers.has('x-radar-csrf')) {
+      opts.headers.set('x-radar-csrf', csrfToken);
+    }
+  }
+
+  return fetch(url, opts);
 }
 
 export default apiFetch;
